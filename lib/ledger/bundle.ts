@@ -1,4 +1,6 @@
 import { CANON_VERSION, getPublicIdentity } from "../attest";
+import { CLAIM_VERSION } from "../attest/claims";
+import { db } from "../db/client";
 import type { LedgerReceipt } from "../contracts";
 import { verifiedChain } from "./read";
 import { toSignedRecord, type SignedRecord } from "./record";
@@ -36,6 +38,26 @@ export interface BundleItem {
   receipt: LedgerReceipt | null;
 }
 
+/**
+ * A signed claim, as it travels.
+ *
+ * Claims are exported ALONGSIDE entries rather than inside the chain, because
+ * they are not chain members: an entry links to its predecessor, a claim anchors
+ * to a head. Threading them into the chain would make every attestation shift
+ * the link for the next entry, and a bundle exported before and after a
+ * reconciliation would describe two different ledgers.
+ */
+export interface BundleClaim {
+  envelope: {
+    claimVersion: number;
+    claimType: string;
+    claimedAt: string;
+    ledgerHead: string;
+    subject: unknown;
+  };
+  receipt: LedgerReceipt;
+}
+
 export interface ReceiptBundle {
   format: "edict-receipts";
   formatVersion: 1;
@@ -55,6 +77,16 @@ export interface ReceiptBundle {
    */
   partial: boolean;
   entries: BundleItem[];
+  /**
+   * Claims the system makes about the record: what a human was shown before
+   * granting authority, and whether the books balance against the network's own
+   * book.
+   *
+   * Exported even when they are inconvenient. A discrepant reconciliation
+   * attestation is exactly the thing a bundle would be tempted to omit, and
+   * omitting it would make the presence of an attestation meaningless.
+   */
+  claims: BundleClaim[];
   /**
    * Read this before trusting the bundle.
    *
@@ -87,6 +119,10 @@ export async function buildBundle(options: { entryId?: string } = {}): Promise<
     receipt: item.entry.receipt,
   }));
 
+  // A single-entry export is a receipt for one action; carrying the whole
+  // proof plane alongside it would be noise. The full export carries everything.
+  const claims: BundleClaim[] = options.entryId ? [] : await exportableClaims();
+
   return {
     format: "edict-receipts",
     formatVersion: 1,
@@ -101,6 +137,40 @@ export async function buildBundle(options: { entryId?: string } = {}): Promise<
       : null,
     partial: Boolean(options.entryId),
     entries,
+    claims,
     notice: NOTICE,
   };
+}
+
+/**
+ * Every claim, oldest first, in the shape it was signed in.
+ *
+ * The envelope must be reconstructed EXACTLY as `signClaim` built it — same
+ * fields, same types — or the digest will not reproduce. This is the same trap
+ * `record.ts` documents for entries: sign what the reader reconstructs. The
+ * conformance test is what catches a drift here.
+ */
+async function exportableClaims(): Promise<BundleClaim[]> {
+  const rows = await db.claim.findMany({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+
+  return rows
+    .filter((row) => row.receiptDigest !== null)
+    .map((row) => ({
+      envelope: {
+        claimVersion: CLAIM_VERSION,
+        claimType: row.type,
+        claimedAt: row.clockAt.toISOString(),
+        ledgerHead: row.ledgerHead,
+        subject: row.subject,
+      },
+      receipt: {
+        canonVersion: row.receiptCanonVersion ?? "unknown",
+        prevDigest: row.receiptPrevDigest ?? row.ledgerHead,
+        digest: row.receiptDigest as string,
+        signature: row.receiptSignature,
+        keyId: row.receiptKeyId,
+      },
+    }));
 }

@@ -99,6 +99,65 @@ const RECORDS: Array<Record<string, unknown>> = [
   },
 ];
 
+/**
+ * Claims, shaped exactly as lib/reconcile and lib/policy/activation emit them.
+ *
+ * The discrepant reconciliation is the important one: it is the claim a
+ * dishonest system would most want to edit after the fact, so the verifier has
+ * to reproduce its digest byte for byte.
+ */
+function claimsOf() {
+  return [
+    {
+      claimType: "ACTIVATION",
+      claimedAt: "2026-03-01T09:00:00.000Z",
+      ledgerHead: "b".repeat(64),
+      subject: {
+        policyVersionId: "policy-2",
+        policyVersion: 2,
+        englishText: "Never auto-renew Vercel. Auto-renew anything under $500 a month.",
+        ruleCount: 4,
+        previewDigest: "c".repeat(64),
+        batteryVersion: "battery-1",
+        scenarioCount: 72,
+        counts: { ALLOW_AUTO: 9, REQUIRE_APPROVAL: 33, DENY: 30 },
+        activatedAt: "2026-03-01T09:00:00.000Z",
+      },
+    },
+    {
+      claimType: "RECONCILIATION",
+      claimedAt: "2026-03-01T09:05:00.000Z",
+      ledgerHead: "d".repeat(64),
+      subject: {
+        status: "DISCREPANT",
+        provider: "mock",
+        ranAt: "2026-03-01T09:05:00.000Z",
+        mandatesChecked: 8,
+        entriesChecked: 4,
+        chargesChecked: 5,
+        matched: 4,
+        discrepancies: [
+          {
+            kind: "ORPHAN_CHARGE",
+            chargeId: "mock_charge_bypass_1",
+            entryId: null,
+            mandateId: "mandate_seed_cloudsyncpro",
+            vendorName: null,
+            ledgerCents: null,
+            networkCents: 9500,
+            detail: "The network charged 9500 cents and our ledger has no entry for it.",
+          },
+        ],
+        unreadable: [],
+        sentence: "1 discrepancy between our ledger and the payment network's own book.",
+      },
+    },
+  ].map((envelope) => ({
+    envelope: { claimVersion: 1, ...envelope },
+    receipt: issueReceipt({ claimVersion: 1, ...envelope }, envelope.ledgerHead),
+  }));
+}
+
 /** Builds a chained bundle in the same shape lib/ledger/bundle.ts emits. */
 function bundleOf(records: Array<Record<string, unknown>>) {
   let prev = GENESIS_PREV_DIGEST;
@@ -116,6 +175,7 @@ function bundleOf(records: Array<Record<string, unknown>>) {
     key: { algorithm: "ed25519", keyId: "test", publicKeyB64 },
     partial: false,
     entries,
+    claims: claimsOf(),
     notice: "test bundle",
   };
 }
@@ -215,6 +275,85 @@ describe("the standalone verifier agrees with lib/attest", () => {
     // Unattested is not a failure. An entry written before receipts existed,
     // or with no key configured, is not a forgery.
     expect(output).toContain("1 unattested");
+    expect(code).toBe(0);
+  });
+
+  // -- claims ---------------------------------------------------------------
+  //
+  // The verifier grows with the proof plane or the "verify offline" claim
+  // quietly stops covering the newest guarantee. Each case below is a way of
+  // lying about a claim, and the standalone script has to catch all of them
+  // without importing anything from lib/.
+
+  it("verifies the claims a bundle carries", () => {
+    const { code, output } = runVerifier(
+      writeBundle("claims.json", bundleOf(RECORDS)),
+    );
+
+    expect(output).toContain("2 claims verified");
+    expect(output).toContain("ACTIVATION");
+    expect(output).toContain("RECONCILIATION");
+    expect(code).toBe(0);
+  });
+
+  it("renders what a claim actually says, including the inconvenient parts", () => {
+    const { output } = runVerifier(writeBundle("claims-read.json", bundleOf(RECORDS)));
+
+    // A verifier that printed "2 claims verified" without saying a
+    // reconciliation came back DISCREPANT would be technically correct and
+    // practically a cover-up.
+    expect(output).toContain("DISCREPANT");
+    expect(output).toContain("ORPHAN_CHARGE");
+    expect(output).toContain("mock_charge_bypass_1");
+    expect(output).toContain("72 scenarios");
+  });
+
+  it("rejects a reconciliation verdict flipped after signing", () => {
+    const bundle = bundleOf(RECORDS);
+    (bundle.claims[1].envelope.subject as Record<string, unknown>).status = "BALANCED";
+
+    const { code, output } = runVerifier(writeBundle("claim-flipped.json", bundle));
+    expect(output).toContain("altered after it was made");
+    expect(output).toContain("CHAIN COMPROMISED");
+    expect(code).toBe(1);
+  });
+
+  it("rejects a discrepancy quietly deleted from an attestation", () => {
+    const bundle = bundleOf(RECORDS);
+    (bundle.claims[1].envelope.subject as Record<string, unknown>).discrepancies = [];
+
+    const { code } = runVerifier(writeBundle("claim-emptied.json", bundle));
+    expect(code).toBe(1);
+  });
+
+  it("rejects a claim re-anchored to a different point in history", () => {
+    const bundle = bundleOf(RECORDS);
+    bundle.claims[0].envelope.ledgerHead = "e".repeat(64);
+
+    const { code, output } = runVerifier(writeBundle("claim-moved.json", bundle));
+    // Named as its own failure, distinct from an edit: the claim is unmodified,
+    // it is simply pointing somewhere it was never signed against.
+    expect(output).toContain("anchor mismatch");
+    expect(output).toContain("moved to a different point in history");
+    expect(code).toBe(1);
+  });
+
+  it("rejects an activation record whose preview hash was swapped", () => {
+    const bundle = bundleOf(RECORDS);
+    (bundle.claims[0].envelope.subject as Record<string, unknown>).previewDigest =
+      "0".repeat(64);
+
+    const { code } = runVerifier(writeBundle("claim-preview.json", bundle));
+    expect(code).toBe(1);
+  });
+
+  it("accepts a bundle with no claims at all", () => {
+    // A ledger exported before the proof plane existed is not suspicious.
+    const bundle = bundleOf(RECORDS);
+    bundle.claims = [];
+
+    const { code, output } = runVerifier(writeBundle("no-claims.json", bundle));
+    expect(output).toContain("CHAIN INTACT");
     expect(code).toBe(0);
   });
 });

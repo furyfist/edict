@@ -111,6 +111,66 @@ function verifyEntry(item, publicKeyB64, expectedPrev) {
   }
 }
 
+/**
+ * Verifies a CLAIM — a statement about the record, rather than a record of an
+ * action.
+ *
+ * Two differences from an entry, both deliberate:
+ *
+ *   1. A claim is ANCHORED, not sequenced. It carries the ledger head it was
+ *      made against instead of linking to a predecessor, so there is no chain
+ *      position to check — only that the anchor inside the signature matches the
+ *      anchor the envelope displays.
+ *
+ *   2. The signed payload is the envelope itself, not a `record` field.
+ *
+ * The anchor check is what stops `ledgerHead` being a decorative field. Without
+ * it, an attestation saying "the books balanced" could be re-pointed at any
+ * moment in history and would still verify.
+ */
+function verifyClaim(item, publicKeyB64) {
+  const { envelope, receipt } = item;
+
+  if (!receipt || !receipt.digest) return "UNATTESTED";
+  if (!envelope) return "INVALID";
+
+  if (receipt.prevDigest !== envelope.ledgerHead) return "BROKEN_LINK";
+
+  const payload = {
+    canonVersion: receipt.canonVersion,
+    prevDigest: receipt.prevDigest,
+    record: envelope,
+  };
+
+  let canonical;
+  try {
+    canonical = canonicalize(payload);
+  } catch {
+    return "INVALID";
+  }
+
+  if (sha256Hex(canonical) !== receipt.digest) return "INVALID";
+
+  if (!receipt.signature) return "UNATTESTED";
+  if (!publicKeyB64) return "UNATTESTED";
+
+  try {
+    const ok = edVerify(
+      null,
+      Buffer.from(canonical, "utf8"),
+      {
+        key: Buffer.from(publicKeyB64, "base64"),
+        format: "der",
+        type: "spki",
+      },
+      Buffer.from(receipt.signature, "base64"),
+    );
+    return ok ? "VALID" : "INVALID";
+  } catch {
+    return "INVALID";
+  }
+}
+
 // -- reporting ---------------------------------------------------------------
 
 const MARK = {
@@ -249,16 +309,81 @@ for (const item of bundle.entries) {
   expectedPrev = item.receipt ? item.receipt.digest : expectedPrev;
 }
 
-const failed = tally.INVALID + tally.BROKEN_LINK;
+// -- claims ------------------------------------------------------------------
+//
+// Statements the system makes ABOUT the record: what a human was shown before
+// granting authority, and whether the books balance against the payment
+// network's own book.
+
+const claims = Array.isArray(bundle.claims) ? bundle.claims : [];
+const claimTally = { VALID: 0, INVALID: 0, BROKEN_LINK: 0, UNATTESTED: 0 };
+
+if (claims.length > 0) {
+  console.log("claims about this record");
+  console.log("");
+
+  for (const item of claims) {
+    const status = verifyClaim(item, publicKeyB64);
+    claimTally[status] += 1;
+
+    const e = item.envelope ?? {};
+    const s = e.subject ?? {};
+
+    console.log(
+      `[${MARK[status]}] ${day(e.claimedAt)}  ${text(e.claimType, 16)} ` +
+        `anchored to ${String(e.ledgerHead ?? "-").slice(0, 16)}…`,
+    );
+
+    // Read defensively, exactly as entries are. The verdict above never depends
+    // on any of this.
+    if (e.claimType === "ACTIVATION") {
+      console.log(
+        `      policy v${s.policyVersion} — ${s.previewDigest ? `preview ${String(s.previewDigest).slice(0, 16)}… over ${s.scenarioCount} scenarios` : "NO PREVIEW was shown"}`,
+      );
+    } else if (e.claimType === "RECONCILIATION") {
+      console.log(`      ${text(s.status, 12)} via ${s.provider ?? "?"} — ${s.sentence ?? ""}`);
+      for (const d of Array.isArray(s.discrepancies) ? s.discrepancies : []) {
+        // The identifier, always. A reader holding this file offline should be
+        // able to walk into the payment provider's own dashboard and look the
+        // charge up — "one discrepancy" is not something anyone can act on.
+        const ref = d.chargeId ?? d.entryId ?? d.mandateId ?? "unidentified";
+        console.log(`        !! ${d.kind} [${ref}]: ${d.detail}`);
+      }
+      for (const u of Array.isArray(s.unreadable) ? s.unreadable : []) {
+        console.log(`        ?? ${u.vendorName ?? u.mandateId}: ${u.reason} — ${u.message}`);
+      }
+    }
+
+    if (status === "INVALID") {
+      console.log("      !! this claim does not match its signature — it was altered after it was made");
+    } else if (status === "BROKEN_LINK") {
+      console.log(`      !! anchor mismatch — the envelope says ${e.ledgerHead}`);
+      console.log(`         but the signature covers  ${item.receipt.prevDigest}`);
+      console.log("         this claim was moved to a different point in history");
+    } else if (status === "UNATTESTED") {
+      console.log("      -- no signature. Made with no key configured.");
+    }
+
+    console.log("");
+  }
+}
+
+const failed =
+  tally.INVALID + tally.BROKEN_LINK + claimTally.INVALID + claimTally.BROKEN_LINK;
 
 console.log("---");
 console.log(
   `  ${tally.VALID} verified · ${tally.INVALID} altered · ${tally.BROKEN_LINK} chain breaks · ${tally.UNATTESTED} unattested`,
 );
+if (claims.length > 0) {
+  console.log(
+    `  ${claimTally.VALID} claims verified · ${claimTally.INVALID} altered · ${claimTally.BROKEN_LINK} re-anchored · ${claimTally.UNATTESTED} unattested`,
+  );
+}
 console.log("");
 console.log(
   failed === 0
-    ? "  CHAIN INTACT. Every signed entry matches its signature and its position."
+    ? "  CHAIN INTACT. Every signed entry matches its signature and its position, and every claim about them holds."
     : "  CHAIN COMPROMISED. This ledger has been modified since it was written.",
 );
 console.log("");
