@@ -3,25 +3,24 @@ import { DEMO_EPOCH, plusDays, seedClock } from "../clock";
 import { MockPravaAdapter } from "../prava/mock";
 
 /**
- * Seed skeleton.
+ * The demo dataset.
  *
- * Three vendors, one for each of the three outcomes the policy engine can
- * reach: one that auto-renews, one that escalates for approval, and one that is
- * denied outright. Every workstream gets real rows immediately.
+ * Eight vendors, two policy versions, and a set of scenarios that between them
+ * reach every outcome the architecture defines. Nothing here is decorative:
+ * each vendor exists because it exercises a code path the demo needs to show.
  *
- * Reproducibility is the property that matters here. All ids are explicit, all
- * timestamps derive from the fixed demo epoch, and nothing reads wall time or
- * randomness — running the seed twice from empty produces identical rows.
- *
- * This grows into the full eight-vendor dataset in M4, deliberately last, so it
- * targets a finished system rather than being maintained against a moving one.
+ * Reproducibility is the property that matters most. All ids are explicit, all
+ * timestamps derive from the fixed demo epoch, the mock adapter derives its
+ * identifiers from their inputs, and nothing reads wall time or randomness —
+ * so running the seed twice from empty produces identical rows, and "reset to
+ * a clean state" means byte-identical rather than approximately similar.
  */
 
 interface VendorSeed {
   id: string;
   name: string;
   category: string;
-  merchantId: string;
+  merchantId: string | null;
   renewal: {
     id: string;
     dueInDays: number;
@@ -36,6 +35,15 @@ interface VendorSeed {
   scenario: string;
 }
 
+/**
+ * The full dataset.
+ *
+ * Eight vendors, each producing one specified scenario, and between them every
+ * outcome class the architecture defines appears at least once. This is built
+ * last on purpose: it targets a finished system rather than being maintained
+ * against a moving one, and the scenarios are chosen to exercise real code
+ * paths rather than to look varied.
+ */
 export const SKELETON_VENDORS: VendorSeed[] = [
   {
     id: "vendor_figma",
@@ -87,6 +95,99 @@ export const SKELETON_VENDORS: VendorSeed[] = [
     },
     seats: null,
     scenario: "deny — no usage data at all, and an amount well over any ceiling",
+  },
+  {
+    id: "vendor_linear",
+    name: "Linear",
+    category: "project-management",
+    merchantId: "merchant_linear",
+    renewal: {
+      id: "renewal_linear_2025_03",
+      dueInDays: 2,
+      amountCents: 32_00,
+      cadence: "MONTHLY",
+      cycleKey: "2025-03",
+      priorCycleAmountCents: 32_00,
+      previousAmountCents: 32_00,
+    },
+    seats: { licensed: 12, active: 12, dormant: 0 },
+    scenario: "allow — the boring case, which is most of them",
+  },
+  {
+    id: "vendor_notion",
+    name: "Notion",
+    category: "docs",
+    merchantId: "merchant_notion",
+    renewal: {
+      id: "renewal_notion_2025_03",
+      dueInDays: 3,
+      amountCents: 96_00,
+      cadence: "MONTHLY",
+      cycleKey: "2025-03",
+      priorCycleAmountCents: 96_00,
+      previousAmountCents: 96_00,
+    },
+    // 40% dormant. Under the ceiling, so it renews — but the agent proposes a
+    // seat reduction and the ledger shows what it noticed.
+    seats: { licensed: 30, active: 18, dormant: 12 },
+    scenario: "allow with a seat reduction — 40% of seats dormant",
+  },
+  {
+    id: "vendor_loom",
+    name: "Loom",
+    category: "video",
+    merchantId: "merchant_loom",
+    renewal: {
+      id: "renewal_loom_2025_03",
+      dueInDays: 5,
+      amountCents: 150_00,
+      cadence: "MONTHLY",
+      cycleKey: "2025-03",
+      priorCycleAmountCents: 150_00,
+      previousAmountCents: 150_00,
+    },
+    // No seat record at all. Above the auto ceiling and missing evidence:
+    // escalates for the missing-evidence reason rather than the amount.
+    seats: null,
+    scenario: "escalate — missing evidence, above the auto ceiling",
+  },
+  {
+    id: "vendor_airtable",
+    name: "Airtable",
+    category: "database",
+    merchantId: "merchant_airtable",
+    renewal: {
+      id: "renewal_airtable_2025_03",
+      dueInDays: 4,
+      amountCents: 240_00,
+      cadence: "MONTHLY",
+      cycleKey: "2025-03",
+      priorCycleAmountCents: 200_00,
+      previousAmountCents: 200_00,
+    },
+    // Exactly 20% — above the 15% threshold, so the price rule fires before
+    // the amount rule. The refusal cites the increase, not the amount.
+    seats: { licensed: 25, active: 22, dormant: 3 },
+    scenario: "escalate — a 20% price increase, cited over the amount",
+  },
+  {
+    id: "vendor_vercel",
+    name: "Vercel",
+    category: "hosting",
+    // No merchant id. Nothing to pin a mandate to, so it cannot be paid
+    // unattended however small the amount is.
+    merchantId: null,
+    renewal: {
+      id: "renewal_vercel_2025_03",
+      dueInDays: 6,
+      amountCents: 20_00,
+      cadence: "MONTHLY",
+      cycleKey: "2025-03",
+      priorCycleAmountCents: 20_00,
+      previousAmountCents: 20_00,
+    },
+    seats: { licensed: 8, active: 8, dormant: 0 },
+    scenario: "escalate — small and well-used, but no payment merchant",
   },
 ];
 
@@ -187,6 +288,11 @@ async function seedPolicy(): Promise<void> {
 async function seedMandates(): Promise<void> {
   const adapter = new MockPravaAdapter();
   for (const v of SKELETON_VENDORS) {
+    // A vendor with no merchant has nothing to pin a mandate to, so no
+    // mandate is created. The engine escalates it for the missing merchant,
+    // and the outcome router would refuse it for the absent mandate — two
+    // independent reasons the same charge does not happen.
+    if (!v.merchantId) continue;
     await adapter.createMandate({
       vendorId: v.id,
       merchantId: v.merchantId,
