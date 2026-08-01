@@ -212,6 +212,46 @@ describe("the module graph enforces the closing invariants", () => {
     expect(impure).toEqual([]);
   });
 
+  it("invariant 2b — lib/simulate inherits the purity it advertises", () => {
+    // The simulation plane's entire value is that it IS the engine, replayed.
+    // A preview computed by something with its own database read, its own clock,
+    // or its own copy of a threshold would be a second decision-maker wearing
+    // the engine's name — and it would be signed into an activation record.
+    //
+    // So the plane may reach the engine and the contracts, and nothing else.
+    // Callers do the I/O and hand it plain values.
+    const reached = reachableFrom("lib/simulate/");
+
+    const impure = [...reached.keys()].filter(
+      (node) =>
+        !node.startsWith("lib/simulate/") &&
+        !node.startsWith("lib/policy/engine/") &&
+        !node.startsWith("lib/contracts") &&
+        !node.startsWith("unresolved:"),
+    );
+
+    expect(impure).toEqual([]);
+  });
+
+  it("invariant 2c — the simulation plane has no path to money or the record", () => {
+    // Stated separately from the purity check above because it is a different
+    // claim with a different failure mode. Purity could be satisfied by a module
+    // that is pure and still reaches lib/prava's types; this says the plane
+    // cannot touch money, cannot write the record, and cannot read the database,
+    // which is what makes "V2 adds no new paths to money" checkable.
+    const found = violations("lib/simulate/", [
+      "lib/prava/",
+      "lib/ledger/",
+      "lib/outcome/",
+      "lib/db/",
+      "pkg:@prisma/client",
+    ]);
+
+    expect(
+      found.map((v) => `\n  lib/simulate reaches ${v.target} via:\n      ${v.route}`).join(""),
+    ).toBe("");
+  });
+
   it("lib/contracts imports nothing at all", () => {
     // Load-bearing for both invariants above: contracts is the single outward
     // edge each of them is allowed, so it has to stay a leaf. This is the exact
