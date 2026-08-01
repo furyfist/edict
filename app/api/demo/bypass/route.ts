@@ -27,13 +27,33 @@ export const dynamic = "force-dynamic";
  * was skipped without being told will — correctly — stop believing the rest.
  * ---------------------------------------------------------------------------
  *
- * Two modes, because the climax must survive the sandbox behaving unexpectedly:
+ * Three modes:
  *
  *   over_cap — charge above the mandate ceiling. Expected: a Visa decline,
  *              surfaced as THRESHOLD_EXCEEDED.
  *   paused   — pause the mandate first, then charge. Enforcement fully under
  *              our control, and the documented fallback if over_cap does not
  *              decline as the API reference describes.
+ *   omission — charge UNDER the ceiling, so it succeeds, and suppress the
+ *              ledger write. See below.
+ *
+ * ---------------------------------------------------------------------------
+ * THE OMISSION MODE IS A DIFFERENT KIND OF ATTACK
+ *
+ * The first two modes attack the CEILING and lose. This one does not attack the
+ * ceiling at all — it stays underneath it, where the network has no objection,
+ * and attacks the RECORD instead by simply not writing one.
+ *
+ * That is the attack an append-only ledger cannot survive on its own. Nothing is
+ * altered, no signature breaks, no chain link fails, and the money is gone. It
+ * is the reason two-sided reconciliation exists, and it is the only way to
+ * demonstrate that reconciliation does anything.
+ *
+ * It steals from ourselves, using our own admin access, on purpose, and it is
+ * labelled as such wherever it appears. Like the tamper control, it is not a
+ * feature — it is a demonstration of the one attack our own guarantees do not
+ * cover, immediately followed by the thing that does cover it.
+ * ---------------------------------------------------------------------------
  */
 export async function POST(request: Request) {
   let body: { vendorId?: unknown; amountCents?: unknown; mode?: unknown };
@@ -47,7 +67,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "vendorId is required" }, { status: 400 });
   }
 
-  const mode = body.mode === "paused" ? "paused" : "over_cap";
+  const mode =
+    body.mode === "paused"
+      ? "paused"
+      : body.mode === "omission"
+        ? "omission"
+        : "over_cap";
   const clock = await getClock();
 
   const mandate = await db.mandate.findUnique({
@@ -83,6 +108,55 @@ export async function POST(request: Request) {
       : (cents(mandate.capCents * 20) as Cents);
 
   const boundary = paymentBoundary();
+
+  // -- omission: money moves, nothing is recorded ----------------------------
+  //
+  // Deliberately UNDER the ceiling, because the point is not to test the
+  // ceiling. A charge the network is perfectly happy to authorize, followed by
+  // the absence of a ledger write. No entry, no tick, no receipt, no chain
+  // break — the record is intact and silent.
+  if (mode === "omission") {
+    const stolen = cents(
+      Math.max(1, Math.min(mandate.remainingCents, renewal.amountCents)),
+    );
+
+    const theft = await boundary.charge({
+      mandateId: mandate.pravaMandateId,
+      amountCents: stolen,
+      currency: "USD",
+      idempotencyKey: `omission:${renewal.id}:${wallNow().getTime()}`,
+    });
+
+    if (!theft.ok) {
+      return NextResponse.json({
+        ok: true,
+        bypassed: true,
+        mode,
+        declined: true,
+        failure: theft.failure,
+        note:
+          "The under-cap charge was declined, so nothing was omitted. Check the " +
+          "mandate has headroom before running this beat.",
+      });
+    }
+
+    // No appendEntry. That absence IS the attack.
+    return NextResponse.json({
+      ok: true,
+      bypassed: true,
+      mode,
+      declined: false,
+      vendorName: vendor.name,
+      mandateId: theft.mandateId,
+      chargeId: theft.chargeId,
+      amountCents: stolen,
+      entryId: null,
+      note:
+        `${vendor.name} was charged ${stolen} cents and NO ledger entry was written. ` +
+        "The chain is intact, every signature still verifies, and the record is " +
+        "wrong. Run reconciliation on the Authority page.",
+    });
+  }
 
   if (mode === "paused") {
     await boundary.pauseMandate(mandate.pravaMandateId);

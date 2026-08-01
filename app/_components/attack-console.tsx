@@ -279,6 +279,52 @@ export function AttackConsole({
 
       <div className="rounded border border-rose-500/30 bg-rose-500/5 p-4">
         <h2 className="text-sm font-medium text-rose-200">
+          5 — Steal from ourselves, and leave no record
+        </h2>
+        <p className="mt-1 text-xs text-neutral-400">
+          The attacks above go over the ceiling and lose. This one stays{" "}
+          <span className="text-neutral-200">under</span> it, where the card
+          network has no objection — and simply does not write the ledger entry.
+          Nothing is altered, no signature breaks, and the money is gone.
+        </p>
+        <p className="mt-1 text-xs text-neutral-400">
+          Say this out loud first:{" "}
+          <span className="text-neutral-200">
+            &ldquo;I am about to steal from myself using my own admin access, and
+            my own ledger will not know.&rdquo;
+          </span>
+        </p>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy !== null || !vendorId}
+            onClick={async () => {
+              const body = (await call("bypass", "/api/demo/bypass", {
+                ...json({ vendorId, mode: "omission" }),
+              })) as { note?: string } | null;
+              if (body) {
+                setStatus(body.note ?? null);
+                router.refresh();
+              }
+            }}
+            className="rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs text-rose-200 disabled:opacity-40"
+          >
+            {busy === "bypass" ? "Charging…" : "Charge under cap, suppress the record"}
+          </button>
+        </div>
+
+        <p className="mt-2 text-xs text-neutral-500">
+          Then open <span className="text-neutral-300">Authority</span> and press{" "}
+          <span className="text-neutral-300">Reconcile now</span>. The books come
+          back discrepant and name the charge by its id. An append-only ledger
+          proves nothing was altered; only two-sided reconciliation proves nothing
+          was hidden.
+        </p>
+      </div>
+
+      <div className="rounded border border-rose-500/30 bg-rose-500/5 p-4">
+        <h2 className="text-sm font-medium text-rose-200">
           5 — Rewrite the ledger
         </h2>
         <p className="mt-1 text-xs text-neutral-400">
