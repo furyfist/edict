@@ -1,3 +1,4 @@
+import { LivePravaAdapter } from "./live";
 import { MockPravaAdapter } from "./mock";
 import type { PravaAdapter } from "./types";
 
@@ -14,9 +15,13 @@ let cached: PravaAdapter | null = null;
 
 export function getPravaAdapter(): PravaAdapter {
   if (cached) return cached;
-  // The live adapter lands in M3. Until then, and whenever PRAVA_MODE is not
-  // explicitly "live", the mock is what runs.
-  cached = new MockPravaAdapter();
+  // Live only when explicitly asked for and credentialed. Anything else runs
+  // the mock — a missing key falls back to the working fallback rather than
+  // to a live adapter that will fail on every call.
+  cached =
+    process.env.PRAVA_MODE === "live" && process.env.PRAVA_API_KEY
+      ? new LivePravaAdapter()
+      : new MockPravaAdapter();
   return cached;
 }
 
@@ -25,6 +30,7 @@ export function __resetAdapter(): void {
   cached = null;
 }
 
+export { LivePravaAdapter } from "./live";
 export { MockPravaAdapter } from "./mock";
 export {
   isRetryable,
