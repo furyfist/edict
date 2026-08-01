@@ -33,7 +33,12 @@ export type AgentResult =
     };
 
 export interface Agent {
-  readonly name: "stub" | "llm";
+  /**
+   * `hostile` is the gauntlet's attacker-controlled proposer. It is listed here
+   * because the type must admit it, and it is named rather than disguised: an
+   * adversarial proposal is attributable in the ledger like any other.
+   */
+  readonly name: "stub" | "llm" | "hostile";
   /** Recorded in the ledger's `decidedBy` field. */
   readonly modelId: string;
   readonly promptVersion: string;

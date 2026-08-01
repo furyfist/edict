@@ -196,6 +196,53 @@ describe("the module graph enforces the closing invariants", () => {
     ).toBe("");
   });
 
+  it("invariant 1b — lib/adversary is jailed by the same wall as lib/agent", () => {
+    // The symmetry is the sentence: BOTH models in this system are quarantined
+    // by build failure rather than by intention. The proposer cannot reach money
+    // because it might be manipulated; the attacker cannot reach money because
+    // it is manipulation.
+    //
+    // The list is deliberately identical to invariant 1's, including lib/db. It
+    // would have been defensible to let the adversary write to the
+    // inbound-message table — a real attacker genuinely can put text in front of
+    // the agent — but this module only PLANS attacks and hands back
+    // descriptions. Something outside the wall carries them out, exactly as a
+    // real vendor's mail server is outside our wall.
+    const found = violations("lib/adversary/", [
+      "lib/prava/",
+      "lib/ledger/",
+      "lib/policy/engine/",
+      "lib/outcome/",
+      "lib/db/",
+      "pkg:@prisma/client",
+    ]);
+
+    expect(
+      found
+        .map((v) => `\n  lib/adversary reaches ${v.target} via:\n      ${v.route}`)
+        .join(""),
+    ).toBe("");
+  });
+
+  it("invariant 1c — the attacker cannot decide what its own attacks proved", () => {
+    // Subtler than the wall above, and worth its own assertion.
+    //
+    // The adversary may construct proposals, because that is what an attacker
+    // does. It must never be able to reach the code that ADJUDICATES them —
+    // otherwise the gauntlet's scoreboard would be written by the attacker, and
+    // "zero executions outside authority" would be a number the attacker chose.
+    //
+    // lib/policy/engine is already covered above; this pins the outcome router
+    // and the reconciler too, since both produce findings the record cites.
+    const found = violations("lib/adversary/", ["lib/reconcile/"]);
+
+    expect(
+      found
+        .map((v) => `\n  lib/adversary reaches ${v.target} via:\n      ${v.route}`)
+        .join(""),
+    ).toBe("");
+  });
+
   it("invariant 2 — lib/policy/engine stays pure", () => {
     // The engine is the only component permitted to say yes, and its purity is
     // what makes "the model is never the last line of defense" true rather than
