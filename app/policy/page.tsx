@@ -2,6 +2,7 @@ import { listVersions } from "@/lib/policy/versions";
 import { formatCents } from "@/lib/contracts/money";
 import type { Cents } from "@/lib/contracts";
 import { DbUnavailable, PageHeader } from "../_components/page-header";
+import { PolicyComposer } from "../_components/policy-composer";
 
 export const dynamic = "force-dynamic";
 
@@ -83,11 +84,17 @@ export default async function PolicyPage() {
 
       {unavailable ? (
         <DbUnavailable />
-      ) : !active ? (
-        <p className="mt-6 text-sm text-neutral-500">
-          No active policy. The agent halts until one is activated.
-        </p>
       ) : (
+        <>
+          <div className="mt-6 rounded border border-neutral-800 p-4">
+            <PolicyComposer initialText={active?.englishText ?? ""} />
+          </div>
+
+          {!active ? (
+            <p className="mt-6 text-sm text-neutral-500">
+              No active policy. The agent halts until one is activated.
+            </p>
+          ) : (
         <>
           <div className="mt-6 grid gap-6 md:grid-cols-2">
             <div>
@@ -162,6 +169,8 @@ export default async function PolicyPage() {
               </ul>
             </div>
           ) : null}
+        </>
+          )}
         </>
       )}
     </section>
