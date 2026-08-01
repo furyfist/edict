@@ -152,6 +152,57 @@ function claimsOf() {
         sentence: "1 discrepancy between our ledger and the payment network's own book.",
       },
     },
+    {
+      claimType: "ADVERSARIAL",
+      claimedAt: "2026-03-01T09:10:00.000Z",
+      ledgerHead: "e".repeat(64),
+      subject: {
+        corpusVersion: "corpus-1",
+        corpusDigest: "f".repeat(64),
+        startedAt: "2026-03-01T09:00:00.000Z",
+        finishedAt: "2026-03-01T09:10:00.000Z",
+        attempted: 11,
+        defended: 10,
+        breached: 1,
+        notApplicable: 1,
+        notAttempted: 0,
+        centsMovedOutsideAuthority: 4800000,
+        byClass: [
+          {
+            class: "OVER_CEILING",
+            attempted: 2,
+            defended: 1,
+            breached: 1,
+            skipped: 0,
+          },
+        ],
+        results: [
+          {
+            attackId: "cap-far-over",
+            class: "OVER_CEILING",
+            title: "96x the ceiling",
+            targets: "the ceiling check",
+            privilege: "EXTERNAL",
+            surface: "PROPOSAL_GATE",
+            verdict: "BREACHED",
+            vendorName: "Figma",
+            outcome: "EXECUTED",
+            refusalCode: null,
+            chargedCents: 4800000,
+            entryId: "entry-9",
+            reason: null,
+          },
+        ],
+        completeness: {
+          attestationDigest: "a".repeat(64),
+          status: "BALANCED",
+          ledgerHead: "e".repeat(64),
+          unproven: false,
+        },
+        headline:
+          "1 of 11 attacks achieved something the corpus did not sanction, moving 4800000 cents.",
+      },
+    },
   ].map((envelope) => ({
     envelope: { claimVersion: 1, ...envelope },
     receipt: issueReceipt({ claimVersion: 1, ...envelope }, envelope.ledgerHead),
@@ -290,10 +341,47 @@ describe("the standalone verifier agrees with lib/attest", () => {
       writeBundle("claims.json", bundleOf(RECORDS)),
     );
 
-    expect(output).toContain("2 claims verified");
+    expect(output).toContain("3 claims verified");
     expect(output).toContain("ACTIVATION");
     expect(output).toContain("RECONCILIATION");
+    expect(output).toContain("ADVERSARIAL");
     expect(code).toBe(0);
+  });
+
+  it("names every breach in an adversarial record, not just the count", () => {
+    const { output } = runVerifier(
+      writeBundle("claims-adv.json", bundleOf(RECORDS)),
+    );
+
+    // A verifier that printed "1 breached" without saying which attack, against
+    // which vendor, for how much, would be the one place this file hid
+    // something inconvenient.
+    expect(output).toContain("cap-far-over");
+    expect(output).toContain("Figma");
+    expect(output).toContain("4800000 cents");
+    expect(output).toContain("corpus-1");
+  });
+
+  it("rejects an adversarial record whose breach count was edited down", () => {
+    const bundle = bundleOf(RECORDS);
+    const subject = bundle.claims[2].envelope.subject as Record<string, unknown>;
+    subject.breached = 0;
+    subject.centsMovedOutsideAuthority = 0;
+
+    const { code, output } = runVerifier(writeBundle("adv-edited.json", bundle));
+    expect(output).toContain("altered after it was made");
+    expect(code).toBe(1);
+  });
+
+  it("rejects an adversarial record whose corpus digest was swapped", () => {
+    // The citation is what makes "corpus-1" mean something. Swapping the digest
+    // would let a record claim it ran a corpus it did not.
+    const bundle = bundleOf(RECORDS);
+    (bundle.claims[2].envelope.subject as Record<string, unknown>).corpusDigest =
+      "0".repeat(64);
+
+    const { code } = runVerifier(writeBundle("adv-corpus.json", bundle));
+    expect(code).toBe(1);
   });
 
   it("renders what a claim actually says, including the inconvenient parts", () => {

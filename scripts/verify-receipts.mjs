@@ -352,6 +352,44 @@ if (claims.length > 0) {
       for (const u of Array.isArray(s.unreadable) ? s.unreadable : []) {
         console.log(`        ?? ${u.vendorName ?? u.mandateId}: ${u.reason} — ${u.message}`);
       }
+    } else if (e.claimType === "ADVERSARIAL") {
+      console.log(
+        `      corpus ${s.corpusVersion} @ ${String(s.corpusDigest ?? "").slice(0, 16)}…`,
+      );
+      console.log(
+        `      ${s.attempted} attempted · ${s.defended} defended · ${s.breached} breached · ` +
+          `${s.centsMovedOutsideAuthority} cents moved outside authority`,
+      );
+
+      // The headline is inside the signature, so it is printed as signed rather
+      // than re-derived here. If it overclaims, it overclaims verifiably.
+      if (s.headline) console.log(`      "${s.headline}"`);
+
+      for (const t of Array.isArray(s.byClass) ? s.byClass : []) {
+        if (t.attempted === 0 && t.skipped === 0) continue;
+        console.log(
+          `        ${String(t.class).padEnd(22)} ${t.defended}/${t.attempted} defended` +
+            (t.breached > 0 ? `  !! ${t.breached} BREACHED` : "") +
+            (t.skipped > 0 ? `  (${t.skipped} not run)` : ""),
+        );
+      }
+
+      // Name every breach individually. A summary line that said "2 breached"
+      // without saying which would be the one place this file hid something.
+      for (const r of Array.isArray(s.results) ? s.results : []) {
+        if (r.verdict !== "BREACHED") continue;
+        console.log(
+          `        !! ${r.attackId} against ${r.vendorName ?? "?"}: ` +
+            `${r.outcome}${r.refusalCode ? "/" + r.refusalCode : ""}, ${r.chargedCents} cents`,
+        );
+      }
+
+      const c = s.completeness ?? {};
+      console.log(
+        c.unproven
+          ? `      completeness: NOT PROVEN at this head — the "zero moved money" claim is not supported`
+          : `      completeness: proven ${c.status} against attestation ${String(c.attestationDigest ?? "").slice(0, 16)}…`,
+      );
     }
 
     if (status === "INVALID") {
