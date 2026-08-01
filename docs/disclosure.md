@@ -10,7 +10,12 @@ out loud during the demo, not buried in a repository nobody opens.
 ## What is real
 
 - **The policy engine.** Deterministic, two-pass, with 33 tests covering every
-  specified edge case. Same inputs, same verdict, forever.
+  specified edge case. Same inputs, same verdict, forever — and now checkable
+  rather than merely claimed: `npm run replay` re-adjudicates every entry in the
+  ledger from its frozen evidence and reproduces every verdict.
+- **The policy preview.** The rows in the confirmation modal are produced by the
+  real engine, not a model of it. `lib/simulate` imports `lib/policy/engine` and
+  `lib/contracts` and nothing else, enforced by `lib/architecture.test.ts`.
 - **The enforcement layering.** The amount ceiling is enforced in the tokenized
   card credential — a Visa decline, surfaced as `THRESHOLD_EXCEEDED`. Merchant,
   frequency and duration are enforced by Prava. Our engine is the first gate.
@@ -36,6 +41,13 @@ out loud during the demo, not buried in a repository nobody opens.
 - **Vendor billing contacts.** Fictional `@example` addresses. No real personal
   data is stored anywhere in this system.
 - **Inbound vendor messages**, including the injection payload.
+- **Most of the preview.** Of the 72 scenarios in the confirmation modal,
+  **eight are real** — one current renewal per vendor, at its real amount — and
+  **64 are constructed**: the same eight boundary cases applied to every vendor.
+  They are labelled *hypothetical* on screen and marked `synthetic` in the data,
+  and the proposals inside them carry the sentence *"Not proposed by any
+  model."* Say this out loud during the beat rather than letting someone find
+  it.
 - **The company itself.** There is no customer behind this data.
 
 ## What is simulated rather than integrated
@@ -113,6 +125,34 @@ comparing the key id against `/api/receipts/key`.
 verifier reports them that way. Nothing was retroactively signed — backdating a
 signature would misrepresent when the record was sealed, and it would need an
 update path the ledger does not have.
+
+---
+
+## What an activation record does not prove
+
+The same discipline, applied to the newest claim in the system.
+
+**It proves** that a policy was activated, that a preview with this exact hash
+was computed from the books at that moment and matched what the browser
+rendered, and that the ledger was in this exact state when it happened. Break
+any of those and the record fails verification, naming which one broke.
+
+**It does not prove a human read the preview.** It proves one was shown and
+consented past. No system can prove attention, and this one does not pretend to.
+The honest claim is *"nobody can now say they were never shown"* — which is the
+useful half.
+
+**It does not prove the preview was a good preview.** The battery covers eight
+boundary cases chosen by us. A scenario nobody thought of is a scenario the
+preview does not contain, and the battery version is recorded so that gap is
+attributable rather than invisible.
+
+**A preview describes the policy, not the model.** Every proposal in the battery
+is constructed, not proposed by an agent. It answers "what would this authority
+permit", which is identical whichever model asks — that invariance is the point,
+not an omission.
+
+---
 
 **The tamper control on the attack console does not go through `lib/ledger`.**
 It writes to the table directly, because that is the only way this record can be

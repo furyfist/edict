@@ -50,6 +50,28 @@ Page routes, all **WS-D**:
 
 ---
 
+## V2 additions
+
+New directories and the routes that drive them. Same rule as above: do not
+create a file outside your directories.
+
+| Directory / file | Owner | Contents |
+|---|---|---|
+| `lib/simulate/` | **WS-A** | The simulation plane. Pure — engine and contracts only, enforced by the architecture test |
+| `lib/policy/preview.ts` | **WS-C** | The I/O the simulation plane refuses to do: grouped evidence reads, preview digest |
+| `lib/policy/activation.ts` | **WS-C** | The activation record: preview recheck, sign, persist |
+| `lib/attest/claims.ts` | **WS-A** | The claim envelope. Shared by all three V2 claim types |
+| `app/api/policy/diff/` | **WS-C** | Behavioral diff, on demand |
+| `scripts/replay-history.ts` | **WS-A** | History replay CLI |
+
+**Schema change announced (V2/M1):** one new enum `ClaimType` and one new model
+`Claim`. This is a new table, not an additive column, and it is deliberate — the
+three V2 claim types (activation, reconciliation, adversarial) are one object,
+so adding a type must never mean adding a table, a signer, or a verifier. No
+existing model was altered.
+
+---
+
 ## Known contention points
 
 **`prisma/schema.prisma`** — the highest-risk shared file in the repository.

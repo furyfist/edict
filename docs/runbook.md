@@ -13,7 +13,8 @@ Everything needed to drive the demo, and to recover when something goes wrong.
 | Database reachable | `npm run db:push` |
 | Connection pool | `DATABASE_URL` ends `connection_limit=20`. Worth ~0.2s since the Vendors page reads were grouped; keep it, but it is not load-bearing |
 | Clean state | `npm run seed` |
-| Tests green | `npm run test` — expect 162 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
+| Tests green | `npm run test` — expect 209 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
+| **History replays** | `npm run replay` — expect `IDENTICAL`. If it diverges, the engine no longer reproduces a decision it already made, and beat 1's Q&A answer is gone. **~4s** |
 | **Signing key is set** | `curl <url>/api/receipts/key` → `configured: true`. **If this is false every entry reads *unattested* and beat 7 evaporates.** Set `RECEIPT_SIGNING_KEY`, redeploy, re-run the tick |
 | Verifier runs on the presentation machine | `npm run verify <bundle>` against an exported file, with wifi off |
 | Build clean | `npm run build` |
@@ -48,12 +49,16 @@ nothing; one that overruns the number you rehearsed to costs you the room.
 | Repeat tick (all skipped) | ~25s | Still not instant — idempotency check is 8 round trips |
 | Reseed | **80–95s** | Recovery, not a live beat. Start it before you need it. Writes ~12,400 usage rows; batched, so the count barely moves the clock |
 | Kill switch engage/release | ~16s | Fine live |
-| Policy compile | ~4s | Fine live — this is the good one to do on stage |
+| **Policy compile + preview** | **10.2–11.0s** | Live, but **narrate through it**. About 6–7s is the model, ~4s is the preview replaying 72 scenarios over eight vendors' evidence. Say what it is doing while it does it — see beat 1 |
+| **Policy activation** | **8.7s** | Live. The server rebuilds the entire preview to check it matches the one you were shown before it will sign anything. That pause is a sentence, not an apology |
+| **Behavioral diff** (`/policy`) | **4.0–4.4s** | Q&A only, on click. Never on the critical path |
+| **History replay** (`npm run replay`, 8 entries) | **4.1–4.6s** | Q&A. Includes process start and connection |
 | Engine bypass (either mode) | ~3s | Fine live. This is the climax and it is fast |
 | Receipt export | ~2s | Fine live |
 | Offline verification (8 entries) | **<1s** | Fine live. Local crypto, no round trips |
 | Tamper / restore | ~1s each | Fine live, and repeatable — no reseed needed |
-| Page load — ledger, refusals, policy | ~1.4s | Fine live |
+| Page load — ledger, refusals | ~1.4s | Fine live |
+| Page load — policy | ~2.0s | Fine live. Up from ~1.4s: the page now also reads the activation record |
 | Page load — approvals | ~3.0s | Fine live |
 | Page load — authority, attack, vendors | ~3.9s | Fine live |
 
@@ -77,9 +82,49 @@ approvals, and the bypass live — all of those are seconds.
 
 Six beats. The tension is in 4 and 5 — everything before is setup.
 
-**1. Here is the policy, in English.** `/policy`. The user's sentences on the
-left, the rules they compiled into on the right, each rule quoting the words it
-came from.
+**1. Here is the policy, in English — and here is what it would do.** `/policy`.
+Type the three sentences into the composer and press **Compile**.
+
+**~11s. Narrate through it, do not wait in silence.** The model turns English
+into rules, then the rules are replayed against every renewal on the books and
+every boundary case the history does not contain — 72 scenarios.
+
+The modal is the beat. Three counts across the top, then the rows. Point at
+exactly three and then stop:
+
+> *"It would auto-execute Figma at $180 — that is rule 1, and there is the
+> sentence it came from. It would bring Notion at $4,800 to me, and notice it is
+> not my policy that stopped it, it is the mandate ceiling. It would refuse
+> Vercel outright, quoting the words 'Never auto-renew Vercel.'*
+>
+> *I have not granted anything yet. This is the authority I am about to sign,
+> rehearsing itself against my real vendors."*
+
+Then confirm. **~9s**, and say why while it runs:
+
+> *"It is rebuilding that entire preview server-side to check it matches the one
+> I was just shown. If they disagree it refuses to activate — so the record it
+> is about to sign cannot claim I saw something I did not."*
+
+The activation record appears, reading **attested**, carrying the preview hash
+and the ledger head it was anchored to.
+
+**Say "hypothetical", never "example".** Sixty-four of the 72 rows are
+constructed boundary cases and they are labelled as such on screen. Volunteer
+that before anyone squints at it: *"one row per vendor is real, the rest are
+boundary cases we built — over the ceiling by one cent, missing usage data, a
+paused mandate. We do not get to choose which vendors get the awkward cases;
+every case is applied to every vendor."*
+
+**If the preview fails to compute**, the modal says so and offers to activate
+without one. That is a working state, not a broken one — but the record will
+say the authority was granted with nothing proving what was shown, so prefer to
+recompile.
+
+*Left over for Q&A, not for the stage:* on any older version in the history
+list, "what changed between v1 and v5?" replays both versions over one battery
+and names the authority that moved — *6 became automatic, 6 newly refused,*
+row by row. It is the answer to "how do you know what that edit did?"
 
 **2. We let it run overnight.** `/` — the ledger. Point at an entry with no
 human in the attribution chain. The absence *is* the proof.
@@ -257,6 +302,39 @@ It was, on stage. It proposed $48,000. Nothing moved.
 **"How is the confidence score computed?"**
 There isn't one. Confidence is expressed as behaviour: confident enough to act,
 or it escalates.
+
+**"How do I know the engine is deterministic?"**
+Run it. `npm run replay` re-adjudicates every entry in the ledger from its own
+frozen evidence and the exact policy version it ran under, and compares the
+re-derived verdict against the one recorded. It prints `IDENTICAL`. If the
+engine ever acquired a hidden input — a clock, a cache, an environment variable
+— that goes red.
+
+Its limit, volunteered: it proves the decision reproduces. It cannot prove the
+evidence was true when it was frozen, and nothing replayed from a snapshot
+could. The cross-check for that is still Prava's dashboard.
+
+**"Isn't the preview just a demo of your own code agreeing with itself?"**
+It is the same function. Not a model of the engine, not a second implementation
+— `lib/simulate` calls `evaluate` and does nothing else with the answer, and
+`lib/architecture.test.ts` fails the build if that module ever acquires a
+database read, a clock, or a path to `lib/prava`. A preview that could disagree
+with the engine would be worse than no preview, so it is not allowed to be a
+different thing.
+
+**"How do you know the scenarios aren't cherry-picked?"**
+There is no picking. The battery is the complete cross product: eight boundary
+cases applied to every vendor with a renewal, in a fixed order, plus the one
+real renewal per vendor. The only judgement is which boundaries exist, and that
+list is nine lines in `lib/simulate/battery.ts`. A scenario is skipped only when
+it cannot be constructed — you cannot ask a vendor with no mandate what happens
+one cent over its ceiling.
+
+**"Could you sign an activation record for a preview nobody saw?"**
+Not without the browser and the server agreeing on a hash. The client sends the
+digest of what it rendered; the server rebuilds the preview from the same books
+and refuses the activation if they differ. That refusal is a 409 and it names
+both digests. It is also why activation takes ~9s.
 
 **"What stops the agent calling Prava directly?"**
 `lib/agent` has no import path to `lib/prava` — and that is enforced by a test
