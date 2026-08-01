@@ -1,4 +1,4 @@
-# edict — Implementation Handbook
+# Spend Guardian — Implementation Handbook
 
 **Status:** Final planning document. Implementation begins after this.
 

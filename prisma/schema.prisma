@@ -1,4 +1,4 @@
-// Spend Guardian — data model
+// Edict — data model
 //
 // Source of truth: docs/engineering_decisions.md
 // Schema is frozen after M1 except for additive columns.

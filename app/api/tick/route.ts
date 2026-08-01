@@ -11,6 +11,24 @@ export const maxDuration = 60;
  * this in a loop. There is no demo-only path, because a demo-only path is a
  * demo-only bug — and it would make the unattended-autonomy claim false.
  */
+/**
+ * Vercel Cron only ever sends GET. It authenticates with a bearer token built
+ * from CRON_SECRET (Vercel's own convention), never the UI's DEMO_ADMIN_TOKEN
+ * — the two callers get separate secrets so rotating one doesn't touch the
+ * other.
+ */
+export async function GET(request: Request) {
+  const expected = process.env.CRON_SECRET;
+  if (expected) {
+    const provided = request.headers.get("authorization");
+    if (provided !== `Bearer ${expected}`) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
+  }
+
+  return runAndReport();
+}
+
 export async function POST(request: Request) {
   const expected = process.env.DEMO_ADMIN_TOKEN;
   if (expected) {
@@ -22,6 +40,10 @@ export async function POST(request: Request) {
     }
   }
 
+  return runAndReport();
+}
+
+async function runAndReport() {
   try {
     const report = await runTick();
     return NextResponse.json(report);

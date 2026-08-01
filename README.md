@@ -1,4 +1,4 @@
-# Spend Guardian
+# Edict
 
 An agent that holds a company's software budget under delegated, network-enforced
 authority.

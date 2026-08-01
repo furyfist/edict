@@ -38,7 +38,7 @@ function sourcesUnder(dir: string): string[] {
 }
 
 describe("no code path raises a ceiling without a ceremony", () => {
-  it("nothing writes amountCeilingCents on an existing mandate row", () => {
+  it("nothing writes capCents on an existing mandate row outside the mirror", () => {
     const offenders: string[] = [];
 
     for (const file of [
@@ -50,15 +50,14 @@ describe("no code path raises a ceiling without a ceremony", () => {
       // ceiling raise performed locally. The mirror path is allowed to write
       // the ceiling only when reflecting what the network reported.
       const updates = text.match(
-        /prisma\.mandate\.update\(\{[\s\S]{0,600}?\}\)/g,
+        /db\.mandate\.update\(\{[\s\S]{0,600}?\}\)/g,
       );
       if (!updates) continue;
 
       for (const block of updates) {
-        if (!block.includes("amountCeilingCents")) continue;
+        if (!block.includes("capCents")) continue;
         // Permitted: the mirror, which writes what the network said.
-        const isMirror =
-          file.endsWith("mandates.ts") || file.endsWith("live.ts");
+        const isMirror = file.endsWith("mandates.ts");
         if (!isMirror) {
           offenders.push(file);
         }
@@ -71,15 +70,22 @@ describe("no code path raises a ceiling without a ceremony", () => {
     ).toEqual([]);
   });
 
-  it("the ceiling raise path demands a ceremony id", () => {
-    const text = readFileSync(join(ROOT, "lib/approvals/ceiling.ts"), "utf8");
-    expect(text).toContain("passkeyCeremonyId");
-    // The empty-ceremony check is the shape a bypass would take. It must exist.
-    expect(text).toMatch(/passkeyCeremonyId\.trim\(\)/);
+  it("the ceiling raise path only records passkeyAt after Prava confirms", () => {
+    const text = readFileSync(
+      join(ROOT, "lib/outcome/approvals.ts"),
+      "utf8",
+    );
+    // recordPasskey is the only writer of passkeyAt, and it only accepts
+    // CEILING_RAISE approvals — that guard is the shape a bypass would remove.
+    expect(text).toMatch(
+      /approval\.type !== "CEILING_RAISE"[\s\S]{0,40}return false/,
+    );
+    expect(text).toContain("data: { passkeyAt: input.clock }");
   });
 
   it("has no override, force, or bypass parameter anywhere in approvals", () => {
-    for (const file of sourcesUnder(join(ROOT, "lib/approvals"))) {
+    for (const file of sourcesUnder(join(ROOT, "lib/outcome"))) {
+      if (!file.endsWith("approvals.ts")) continue;
       const text = readFileSync(file, "utf8").toLowerCase();
       for (const smell of [
         "skippasskey",
@@ -95,35 +101,54 @@ describe("no code path raises a ceiling without a ceremony", () => {
 });
 
 describe("the in-app approval route refuses ceiling raises", () => {
-  it("checks requiresPasskeyCeremony before approving", () => {
-    const text = readFileSync(
-      join(ROOT, "app/api/approvals/[id]/approve/route.ts"),
-      "utf8",
-    );
-    expect(text).toContain("requiresPasskeyCeremony");
+  it("reports requiresPasskey but never grants it itself", () => {
+    const text = readFileSync(join(ROOT, "app/api/approvals/route.ts"), "utf8");
     expect(text).toMatch(/requiresPasskey/);
+    // Only the passkey route is allowed to open a mandate setup or record a
+    // completed ceremony. If either call appeared here, approving in-app
+    // could grant new authority directly.
+    expect(text).not.toContain("openMandateSetup");
+    expect(text).not.toContain("recordPasskey");
   });
 
-  it("keeps the two routes as separate files", () => {
+  it("keeps the approve and passkey routes as separate files", () => {
     // One handler with a branch would be the collapse this test exists to
     // prevent. Two files means a reviewer sees two things.
-    const approve = join(ROOT, "app/api/approvals/[id]/approve/route.ts");
-    const ceiling = join(ROOT, "app/api/approvals/[id]/ceiling-raise/route.ts");
+    const approve = join(ROOT, "app/api/approvals/route.ts");
+    const passkey = join(ROOT, "app/api/approvals/passkey/route.ts");
     expect(statSync(approve).isFile()).toBe(true);
-    expect(statSync(ceiling).isFile()).toBe(true);
+    expect(statSync(passkey).isFile()).toBe(true);
   });
 });
 
 describe("expiry is never revived", () => {
   it("has no path that moves an approval out of EXPIRED", () => {
-    for (const file of sourcesUnder(join(ROOT, "lib/approvals"))) {
+    const offenders: string[] = [];
+
+    for (const file of sourcesUnder(join(ROOT, "lib/outcome"))) {
+      if (!file.endsWith("approvals.ts")) continue;
       const text = readFileSync(file, "utf8");
-      // Reviving would mean writing a non-terminal status onto a row whose
-      // status is EXPIRED. No such update exists.
-      expect(text).not.toMatch(/status:\s*["']EXPIRED["'][\s\S]{0,200}PENDING/);
+
+      // Creation (`db.approval.create`) legitimately writes status: "PENDING"
+      // once. Reviving would mean an `update`/`updateMany` call writing a
+      // non-terminal status back onto an existing row — no such write exists.
+      const updates =
+        text.match(/db\.approval\.updateMany?\(\{[\s\S]{0,600}?\}\)/g) ?? [];
+      for (const block of updates) {
+        const dataSection = block.slice(block.indexOf("data:"));
+        if (/status:\s*["']PENDING["']/.test(dataSection)) {
+          offenders.push(file);
+        }
+      }
+
       expect(text).not.toContain("unexpire");
       expect(text).not.toContain("reviveApproval");
     }
+
+    expect(
+      offenders,
+      `these updates write status back to PENDING: ${offenders.join(", ")}`,
+    ).toEqual([]);
   });
 });
 
