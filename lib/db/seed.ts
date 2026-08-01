@@ -284,6 +284,211 @@ async function seedPolicy(): Promise<void> {
   });
 }
 
+/**
+ * The prior policy version.
+ *
+ * Written before the current one and superseded by it. It exists so the policy
+ * page has real version history to show, and so a demo can make the point that
+ * versions are immutable — the ledger's `policyVersionId` on an old entry
+ * resolves to exactly these rules, not to whatever the policy says today.
+ *
+ * The substantive difference is the ceiling: this version auto-renewed up to
+ * $250, the current one up to $100. Someone tightened it.
+ */
+export const PRIOR_POLICY_TEXT = [
+  "Never renew anything from CloudSync Pro.",
+  "Renew anything under $250 automatically.",
+  "Anything over $1000 needs my approval.",
+].join("\n");
+
+async function seedPriorPolicy(): Promise<void> {
+  const version = await prisma.policyVersion.create({
+    data: {
+      version: 0,
+      sourceText: PRIOR_POLICY_TEXT,
+      status: "SUPERSEDED",
+      createdAt: plusDays(DEMO_EPOCH, -45),
+      activatedAt: plusDays(DEMO_EPOCH, -45),
+      activatedBy: "user:finance-lead",
+    },
+  });
+
+  await prisma.policyRule.createMany({
+    data: [
+      {
+        policyVersionId: version.id,
+        ordinal: 1,
+        effect: "DENY",
+        conditions: [
+          { field: "VENDOR_ID", operator: "EQ", value: "vendor_cloudsync" },
+        ],
+        amountCeilingCents: null,
+        sourceFragment: "Never renew anything from CloudSync Pro.",
+        description: "Deny every renewal for CloudSync Pro.",
+      },
+      {
+        policyVersionId: version.id,
+        ordinal: 2,
+        effect: "REQUIRE_APPROVAL",
+        conditions: [{ field: "AMOUNT", operator: "GT", value: 1_000_00 }],
+        amountCeilingCents: null,
+        sourceFragment: "Anything over $1000 needs my approval.",
+        description: "Escalate renewals above $1,000.00.",
+      },
+      {
+        policyVersionId: version.id,
+        ordinal: 3,
+        effect: "ALLOW_AUTO",
+        conditions: [{ field: "AMOUNT", operator: "LTE", value: 250_00 }],
+        amountCeilingCents: 250_00,
+        sourceFragment: "Renew anything under $250 automatically.",
+        description: "Auto-renew charges at or below $250.00.",
+      },
+    ],
+  });
+}
+
+/**
+ * Seeded approvals: one pending, one already expired, one resolved.
+ *
+ * These exist so expiry and history are demonstrable without waiting 24 hours
+ * or contriving a detour mid-demo. The expired one is the important one — it
+ * proves that an approval which lapsed cannot be acted on, and a judge can
+ * click it rather than take the claim on faith.
+ */
+async function seedApprovals(): Promise<void> {
+  const loom = SKELETON_VENDORS.find((v) => v.id === "vendor_loom")!;
+  const datadog = SKELETON_VENDORS.find((v) => v.id === "vendor_datadog")!;
+  const airtable = SKELETON_VENDORS.find((v) => v.id === "vendor_airtable")!;
+
+  const snapshot = (v: (typeof SKELETON_VENDORS)[number], gaps: string[]) => ({
+    bundleId: `bundle_${v.renewal.id}_seeded`,
+    observedAt: DEMO_EPOCH.toISOString(),
+    vendor: {
+      id: v.id,
+      name: v.name,
+      category: v.category,
+      merchantId: v.merchantId,
+    },
+    renewal: {
+      id: v.renewal.id,
+      dueAt: plusDays(DEMO_EPOCH, v.renewal.dueInDays).toISOString(),
+      amount: { cents: v.renewal.amountCents, currency: "USD" },
+      cadence: v.renewal.cadence,
+      cycleKey: v.renewal.cycleKey,
+    },
+    seats: v.seats ? { ...v.seats, windowDays: 30 } : null,
+    priceChange:
+      v.renewal.previousAmountCents && v.renewal.previousAmountCents > 0
+        ? {
+            previous: { cents: v.renewal.previousAmountCents, currency: "USD" },
+            current: { cents: v.renewal.amountCents, currency: "USD" },
+            deltaBasisPoints: Math.round(
+              ((v.renewal.amountCents - v.renewal.previousAmountCents) *
+                10_000) /
+                v.renewal.previousAmountCents,
+            ),
+          }
+        : null,
+    priorCycleAmount: v.renewal.priorCycleAmountCents
+      ? { cents: v.renewal.priorCycleAmountCents, currency: "USD" }
+      : null,
+    messages: [],
+    gaps,
+  });
+
+  const verdict = (
+    v: (typeof SKELETON_VENDORS)[number],
+    reason: string,
+    ruleId: string,
+    fragment: string,
+    description: string,
+  ) => ({
+    bundleId: `bundle_${v.renewal.id}_seeded`,
+    proposalId: `proposal_${v.renewal.id}_seeded`,
+    renewalId: v.renewal.id,
+    decision: "REQUIRE_APPROVAL",
+    reason,
+    citedRuleId: ruleId,
+    citedSourceFragment: fragment,
+    citedRuleDescription: description,
+    policyVersionId: "policy_seed_v1",
+    permittedAmount: null,
+    appliedCeiling: 100_00,
+    evidenceGaps: [],
+    counterfactual: null,
+  });
+
+  // Pending, with plenty of time left. The one a demo approves on stage.
+  await prisma.approvalRequest.create({
+    data: {
+      renewalId: airtable.renewal.id,
+      cycleKey: airtable.renewal.cycleKey,
+      vendorId: airtable.id,
+      kind: "POLICY_EXCEPTION",
+      status: "PENDING",
+      amountCents: airtable.renewal.amountCents,
+      evidenceSnapshot: snapshot(airtable, []) as never,
+      verdictSnapshot: verdict(
+        airtable,
+        "RULE_MATCHED",
+        "rule_price_increase",
+        "Anything with a price increase above 15% needs my approval.",
+        "Escalate renewals whose price rose by more than 15%.",
+      ) as never,
+      requestedAt: DEMO_EPOCH,
+      expiresAt: plusDays(DEMO_EPOCH, 1),
+    },
+  });
+
+  // Already expired. Raised two days before the epoch, so it lapsed a day
+  // before the demo clock starts — the buttons are gone and the page says why.
+  await prisma.approvalRequest.create({
+    data: {
+      renewalId: loom.renewal.id,
+      cycleKey: loom.renewal.cycleKey,
+      vendorId: loom.id,
+      kind: "POLICY_EXCEPTION",
+      status: "PENDING",
+      amountCents: loom.renewal.amountCents,
+      evidenceSnapshot: snapshot(loom, ["NO_USAGE_DATA"]) as never,
+      verdictSnapshot: verdict(
+        loom,
+        "MISSING_EVIDENCE",
+        "rule_allow_small",
+        "Renew anything under $100 automatically.",
+        "Auto-renew charges at or below $100.00.",
+      ) as never,
+      requestedAt: plusDays(DEMO_EPOCH, -2),
+      expiresAt: plusDays(DEMO_EPOCH, -1),
+    },
+  });
+
+  // Historical: a human already said no. Shows the resolved list is real.
+  await prisma.approvalRequest.create({
+    data: {
+      renewalId: datadog.renewal.id,
+      cycleKey: "2025-02",
+      vendorId: datadog.id,
+      kind: "POLICY_EXCEPTION",
+      status: "REJECTED",
+      amountCents: datadog.renewal.amountCents,
+      evidenceSnapshot: snapshot(datadog, []) as never,
+      verdictSnapshot: verdict(
+        datadog,
+        "RULE_MATCHED",
+        "rule_price_increase",
+        "Anything with a price increase above 15% needs my approval.",
+        "Escalate renewals whose price rose by more than 15%.",
+      ) as never,
+      requestedAt: plusDays(DEMO_EPOCH, -30),
+      expiresAt: plusDays(DEMO_EPOCH, -29),
+      resolvedAt: plusDays(DEMO_EPOCH, -30),
+      resolvedBy: "user:finance-lead",
+    },
+  });
+}
+
 /** One mandate per vendor, sized to what the policy could ever permit. */
 async function seedMandates(): Promise<void> {
   const adapter = new MockPravaAdapter();
@@ -344,8 +549,10 @@ export async function seed(): Promise<void> {
     }
   }
 
+  await seedPriorPolicy();
   await seedPolicy();
   await seedMandates();
+  await seedApprovals();
 }
 
 async function main(): Promise<void> {
