@@ -8,6 +8,7 @@ import { route } from "../outcome";
 import { NOBODY, TICK, appendEntry, hasEntryForCycle } from "../ledger";
 import { getPravaAdapter } from "../prava";
 import { refreshMandateMirror } from "../prava/mandates";
+import { sweepExpiredApprovals } from "../approvals/expiry";
 import type { PolicyRule, Verdict } from "../contracts";
 
 /**
@@ -127,6 +128,13 @@ export async function runTick(): Promise<TickResult> {
     // and records that it did. Halting the system because one mandate read
     // timed out trades a small inaccuracy for a total outage.
     const mirror = await refreshMandateMirror(adapter);
+
+    // ---- expire stale approvals ----
+    //
+    // Swept before adjudicating so the approvals page reflects reality rather
+    // than showing a live button on consent that has already lapsed. The
+    // check that actually prevents a charge lives at the point of use.
+    await sweepExpiredApprovals();
 
     // ---- pin the policy version for the whole tick ----
     const policy = await prisma.policyVersion.findFirst({
