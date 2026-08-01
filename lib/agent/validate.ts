@@ -47,6 +47,25 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/**
+ * Render an untrusted value for an error message.
+ *
+ * `String(value)` is not safe here: an object whose `toString` is a string
+ * rather than a function throws when coerced, which would turn a refusal into
+ * a crash — inside the very function whose job is to prevent that. The value
+ * being described is hostile by assumption, so it is described without being
+ * asked anything about itself.
+ */
+function describe(value: unknown): string {
+  const type = typeof value;
+  if (value === null) return "null";
+  if (type === "string" || type === "number" || type === "boolean") {
+    return JSON.stringify(value) ?? type;
+  }
+  if (Array.isArray(value)) return "an array";
+  return `a value of type ${type}`;
+}
+
 export interface ValidationContext {
   bundle: EvidenceBundle;
   producedBy: string;
@@ -122,7 +141,7 @@ export function validateProposal(
   if (!isProposedAction(action)) {
     return refuse(
       context,
-      `The proposed action is not in the permitted set: ${String(action)}.`,
+      `The proposed action is not in the permitted set: ${describe(action)}.`,
     );
   }
 
@@ -133,7 +152,7 @@ export function validateProposal(
     if (!isValidCents(amountCents)) {
       return refuse(
         context,
-        `A ${action} proposal requires an integer amount in cents; got ${String(amountCents)}.`,
+        `A ${action} proposal requires an integer amount in cents; got ${describe(amountCents)}.`,
       );
     }
     // A proposal for more than the renewal is worth is refused here as well as
@@ -161,7 +180,7 @@ export function validateProposal(
     ) {
       return refuse(
         context,
-        `A seat reduction requires a positive integer seat count; got ${String(seatCount)}.`,
+        `A seat reduction requires a positive integer seat count; got ${describe(seatCount)}.`,
       );
     }
     if (bundle.seats && seatCount > bundle.seats.licensed) {
