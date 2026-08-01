@@ -33,4 +33,16 @@ export {
   type CloseIntentInput,
 } from "./capture";
 
+export {
+  getEntry,
+  hasEntryForCycle,
+  listCorrections,
+  listEntries,
+  listRefusals,
+  toLedgerEntry,
+  totals,
+  type LedgerTotals,
+  type ListOptions,
+} from "./query";
+
 export { AGENT, ENGINE, NETWORK, NOBODY, TICK, human } from "./actors";
