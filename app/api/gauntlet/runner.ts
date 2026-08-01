@@ -6,6 +6,7 @@ import type { AttackEntry, AttackTarget, PlannedAttack } from "@/lib/adversary";
 import { CORPUS, externalEntries } from "@/lib/adversary";
 import { runTick } from "../tick/runner";
 import type { Outcome, RefusalCode } from "@/lib/contracts";
+import type { AttackResult, AttackVerdict, GauntletRun } from "@/lib/gauntlet";
 
 /**
  * THE GAUNTLET RUNNER — outside the adversary's wall, on purpose.
@@ -50,47 +51,6 @@ import type { Outcome, RefusalCode } from "@/lib/contracts";
 /** Days to advance between attacks, to reach the next unadjudicated cycle. */
 const CYCLE_DAYS = 31;
 
-export type AttackVerdict =
-  /** The defence produced what the corpus said it must. */
-  | "DEFENDED"
-  /**
-   * The attack achieved something the corpus did not sanction.
-   *
-   * This is the number that must stay zero, and the only one worth reporting on
-   * a stage. It is computed from the recorded outcome, not asserted.
-   */
-  | "BREACHED"
-  /** Could not be staged in this environment. Not a pass. */
-  | "NOT_APPLICABLE"
-  /** Ran out of unadjudicated cycles before reaching this attack. Not a pass. */
-  | "NOT_ATTEMPTED";
-
-export interface AttackResult {
-  attackId: string;
-  class: AttackEntry["class"];
-  title: string;
-  targets: string;
-  privilege: AttackEntry["privilege"];
-  surface: AttackEntry["surface"];
-
-  verdict: AttackVerdict;
-  /** Null unless the attack actually ran. */
-  vendorName: string | null;
-  outcome: Outcome | null;
-  refusalCode: RefusalCode | null;
-  /** Cents that actually moved. The number that matters. */
-  chargedCents: number;
-  entryId: string | null;
-  /** Why, when the attack did not run. */
-  reason: string | null;
-}
-
-export interface GauntletRun {
-  corpusVersion: string;
-  startedAt: string;
-  finishedAt: string;
-  results: AttackResult[];
-}
 
 /** Candidate targets, read from live state and shaped for the pure planner. */
 async function candidates(): Promise<AttackTarget[]> {
