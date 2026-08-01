@@ -42,6 +42,9 @@ export {
   apiBase,
 } from "./http";
 export type {
+  ChargeHistoryFailure,
+  ChargeHistoryResult,
+  ChargeRecord,
   ChargeRequest,
   ChargeResult,
   MandateSnapshot,

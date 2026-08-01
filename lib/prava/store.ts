@@ -1,7 +1,7 @@
 import { cents } from "../contracts/money";
-import type { Cents, MandateStatus } from "../contracts";
+import type { Cents, Currency, MandateStatus } from "../contracts";
 import { db } from "../db/client";
-import type { MandateSnapshot, MandateStore } from "./types";
+import type { ChargeRecord, MandateSnapshot, MandateStore } from "./types";
 
 /**
  * Mandate store backed by the local mirror.
@@ -53,5 +53,43 @@ export const dbMandateStore: MandateStore = {
       where: { pravaMandateId: mandateId },
       data: { remainingCents: Math.max(0, row.remainingCents - amountCents) },
     });
+  },
+
+  /**
+   * Persisted, not in-memory, because the reconciliation beat has to survive a
+   * server restart. A second book that evaporates when the process does is not
+   * a second book.
+   *
+   * `create`, never `upsert`: the provider's book is append-only too. A repeated
+   * charge id is a bug worth hearing about, not a row to overwrite.
+   */
+  async recordCharge(charge: ChargeRecord) {
+    await db.mockCharge.create({
+      data: {
+        chargeId: charge.chargeId,
+        mandateId: charge.mandateId,
+        amountCents: charge.amountCents,
+        currency: charge.currency,
+        status: charge.status,
+        reference: charge.reference,
+      },
+    });
+  },
+
+  async charges(mandateId: string) {
+    const rows = await db.mockCharge.findMany({
+      where: { mandateId },
+      orderBy: { createdAt: "asc" },
+    });
+
+    return rows.map((row) => ({
+      chargeId: row.chargeId,
+      mandateId: row.mandateId,
+      amountCents: cents(row.amountCents),
+      currency: row.currency as Currency,
+      status: row.status,
+      createdAt: row.createdAt.toISOString(),
+      reference: row.reference,
+    }));
   },
 };

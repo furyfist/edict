@@ -416,6 +416,35 @@ model LedgerEntry {
   @@index([vendorId])
 }
 
+/// THE MOCK PROVIDER'S OWN BOOK.
+///
+/// Written only by the mock payment adapter, never by lib/ledger and never by
+/// anything else. It exists so reconciliation has a real second book to check
+/// against when no provider is connected — otherwise the offline demo could
+/// only ever compare our ledger with itself, which proves nothing.
+///
+/// This is not a demo-only code path. The mock is a full implementation of the
+/// payment boundary that ships as the documented fallback; this is its
+/// storage, exactly as Prava's own database is the real adapter's.
+model MockCharge {
+  id String @id @default(uuid())
+
+  chargeId  String @unique
+  mandateId String
+
+  amountCents Int
+  currency    String @default("USD")
+  status      String
+
+  /// Our idempotency key, echoed back the way the real provider echoes
+  /// `reference`. The join key for two-sided reconciliation.
+  reference String?
+
+  createdAt DateTime @default(now())
+
+  @@index([mandateId, createdAt])
+}
+
 // ---------------------------------------------------------------------------
 // Proof plane — claims the system makes ABOUT its own record
 // ---------------------------------------------------------------------------

@@ -6,6 +6,8 @@ import {
   pravaRequest,
 } from "./http";
 import type {
+  ChargeHistoryResult,
+  ChargeRecord,
   ChargeRequest,
   ChargeResult,
   MandateSnapshot,
@@ -167,6 +169,142 @@ async function report(input: {
   });
 }
 
+/**
+ * CHARGE HISTORY — the second book, and the one unverified surface in this file.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT WAS ACTUALLY PROBED, 2026-08-01
+ *
+ * The sandbox answers `GET /v1/mandates/{id}` with an APPLICATION 404
+ * (`{"error":{"code":"MANDATE_NOT_FOUND"}}`) — the route exists. It answers
+ * `GET /v1/mandates/{id}/charges` with a ROUTER 404
+ * (`{"message":"Route GET:... not found","statusCode":404}`) — no such route.
+ * Same for `/transactions`, `/history`, and the two collection-style paths.
+ *
+ * So a charge-history read is NOT confirmed to exist on this provider. The path
+ * attempted below is the collection that the documented report endpoint
+ * (`/v1/mandates/{id}/charges/{txnId}/report`) is nested under, which is the
+ * only principled guess available. If Prava ships or documents a different one,
+ * this function is the single place that changes.
+ *
+ * That is what the adapter is FOR. The unknown is isolated here, `lib/reconcile`
+ * consumes a typed result, and the answer "this provider cannot be reconciled"
+ * travels all the way to the interface as a distinct state rather than being
+ * quietly rendered as balanced books.
+ * ---------------------------------------------------------------------------
+ */
+interface ChargeListBody {
+  charges?: unknown;
+  data?: unknown;
+  transactions?: unknown;
+}
+
+interface ChargeItemBody {
+  id?: string;
+  transactionId?: string;
+  chargeId?: string;
+  mandateId?: string;
+  amount?: string | number;
+  currency?: string;
+  status?: string;
+  createdAt?: string;
+  created_at?: string;
+  reference?: string;
+}
+
+function toChargeRecord(item: ChargeItemBody, mandateId: string): ChargeRecord | null {
+  const chargeId = item.transactionId ?? item.chargeId ?? item.id;
+  // A charge we cannot identify cannot be reconciled against anything. Dropping
+  // it silently would understate the provider's book, so the caller is told the
+  // read was partial by getting fewer records than the provider sent — which is
+  // why this is logged rather than swallowed.
+  if (!chargeId) {
+    console.error("[prava] charge history item has no identifier; skipped");
+    return null;
+  }
+
+  return {
+    chargeId,
+    mandateId: item.mandateId ?? mandateId,
+    amountCents: decimalToCents(item.amount),
+    currency: (item.currency ?? "USD").toUpperCase() === "USD" ? "USD" : "USD",
+    status: item.status ?? "unknown",
+    createdAt: item.createdAt ?? item.created_at ?? null,
+    reference: item.reference ?? null,
+  };
+}
+
+/** A Fastify router miss looks different from an application 404. */
+function isRouteMissing(body: unknown): boolean {
+  const message = (body as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message.startsWith("Route ");
+}
+
+async function listChargesFor(mandateId: string): Promise<ChargeHistoryResult> {
+  const response = await pravaRequest<ChargeListBody>({
+    method: "GET",
+    path: `/v1/mandates/${encodeURIComponent(mandateId)}/charges`,
+  });
+
+  if (response.transportError) {
+    return {
+      ok: false,
+      reason: "UNAVAILABLE",
+      message: response.transportError,
+    };
+  }
+
+  if (response.status === 404) {
+    if (isRouteMissing(response.body)) {
+      return {
+        ok: false,
+        reason: "UNSUPPORTED",
+        message:
+          "This Prava environment exposes no charge-history endpoint, so the " +
+          "ledger cannot be reconciled against the network's own record.",
+      };
+    }
+    return {
+      ok: false,
+      reason: "MANDATE_NOT_FOUND",
+      message: `No mandate ${mandateId}.`,
+    };
+  }
+
+  if (!response.ok || !response.body) {
+    return {
+      ok: false,
+      reason: "UNAVAILABLE",
+      message: `Charge history request failed with status ${response.status}.`,
+    };
+  }
+
+  const body = response.body;
+  const raw = Array.isArray(body)
+    ? body
+    : Array.isArray(body.charges)
+      ? body.charges
+      : Array.isArray(body.data)
+        ? body.data
+        : Array.isArray(body.transactions)
+          ? body.transactions
+          : null;
+
+  if (raw === null) {
+    return {
+      ok: false,
+      reason: "UNAVAILABLE",
+      message: "Charge history response did not contain a list of charges.",
+    };
+  }
+
+  const charges = (raw as ChargeItemBody[])
+    .map((item) => toChargeRecord(item, mandateId))
+    .filter((record): record is ChargeRecord => record !== null);
+
+  return { ok: true, charges };
+}
+
 async function lifecycle(
   mandateId: string,
   action: "pause" | "resume" | "cancel",
@@ -196,6 +334,8 @@ export function createPravaAdapter(): PaymentBoundary {
       if (!response.ok || !response.body) return null;
       return toSnapshot(response.body, mandateId);
     },
+
+    listCharges: (id) => listChargesFor(id),
 
     pauseMandate: (id) => lifecycle(id, "pause"),
     resumeMandate: (id) => lifecycle(id, "resume"),

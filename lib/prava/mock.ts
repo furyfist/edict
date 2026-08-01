@@ -2,6 +2,8 @@ import { cents } from "../contracts/money";
 import { isChargeable } from "../contracts";
 import type { Cents, MandateStatus } from "../contracts";
 import type {
+  ChargeHistoryResult,
+  ChargeRecord,
   ChargeRequest,
   ChargeResult,
   MandateSnapshot,
@@ -125,12 +127,40 @@ export function createMockAdapter(options: MockOptions): PaymentBoundary {
       await store.consume(request.mandateId, request.amountCents);
       counter += 1;
 
+      const chargeId = `mock_charge_${request.idempotencyKey}_${counter}`;
+
+      // The mock's own book. Written by the ADAPTER, not by the caller, and
+      // deliberately not by lib/ledger — that separation is the entire point of
+      // reconciliation. If a charge succeeds here and the ledger write is
+      // suppressed, this record survives to accuse us.
+      await store.recordCharge({
+        chargeId,
+        mandateId: request.mandateId,
+        amountCents: request.amountCents,
+        currency: request.currency,
+        status: "succeeded",
+        createdAt: new Date().toISOString(),
+        reference: request.idempotencyKey,
+      });
+
       return {
         ok: true,
         mandateId: request.mandateId,
-        chargeId: `mock_charge_${request.idempotencyKey}_${counter}`,
+        chargeId,
         status: "succeeded",
       };
+    },
+
+    async listCharges(mandateId): Promise<ChargeHistoryResult> {
+      const mandate = await store.get(mandateId);
+      if (!mandate) {
+        return {
+          ok: false,
+          reason: "MANDATE_NOT_FOUND",
+          message: `No mandate ${mandateId}.`,
+        };
+      }
+      return { ok: true, charges: await store.charges(mandateId) };
     },
   };
 }
@@ -142,8 +172,17 @@ export function inMemoryMandateStore(
   const map = new Map<string, MandateSnapshot>(
     seed.map((mandate) => [mandate.mandateId, { ...mandate }]),
   );
+  const charges: ChargeRecord[] = [];
 
   return {
+    async recordCharge(charge: ChargeRecord) {
+      charges.push({ ...charge });
+    },
+    async charges(mandateId: string) {
+      return charges
+        .filter((charge) => charge.mandateId === mandateId)
+        .map((charge) => ({ ...charge }));
+    },
     async get(mandateId) {
       const found = map.get(mandateId);
       return found ? { ...found } : null;
