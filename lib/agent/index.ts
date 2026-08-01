@@ -1,4 +1,6 @@
 import type { EvidenceBundle, ProposalResult } from "../contracts";
+import { isModelConfigured } from "./client";
+import { realPropose } from "./propose";
 import { stubPropose } from "./stub";
 
 /**
@@ -16,10 +18,23 @@ import { stubPropose } from "./stub";
 
 export type Proposer = (bundle: EvidenceBundle) => Promise<ProposalResult>;
 
+/**
+ * Propose an action for one renewal.
+ *
+ * The swap between the stub and the real proposer happens here and nowhere
+ * else. The tick runner calls `propose` and cannot tell which one answered,
+ * which is what makes the stub a live fallback rather than a dead branch: set
+ * `AGENT_MODE=stub` and the demo continues with no code change.
+ */
 export async function propose(
   bundle: EvidenceBundle,
 ): Promise<ProposalResult> {
+  if (isModelConfigured()) {
+    return realPropose(bundle);
+  }
   return stubPropose(bundle);
 }
 
+export { realPropose, renderPrompt } from "./propose";
 export { stubPropose } from "./stub";
+export { validateProposal } from "./validate";
