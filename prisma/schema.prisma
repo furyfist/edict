@@ -6,3 +6,110 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ---------------------------------------------------------------------------
+// Evidence side: the facts the evidence builder reads.
+//
+// Money is stored as integer cents throughout. Timestamps written by the
+// application always come from the demo clock, never from wall time.
+// ---------------------------------------------------------------------------
+
+model Vendor {
+  id         String  @id
+  name       String
+  category   String
+  merchantId String?
+
+  seats     SeatRecord[]
+  usage     UsageRecord[]
+  renewals  Renewal[]
+  messages  VendorMessage[]
+
+  createdAt DateTime @default(now())
+
+  @@index([category])
+}
+
+model SeatRecord {
+  id       String @id @default(cuid())
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  licensed   Int
+  active     Int
+  dormant    Int
+  windowDays Int
+
+  /// Demo-clock instant this snapshot describes.
+  observedAt DateTime
+
+  @@index([vendorId, observedAt])
+}
+
+model UsageRecord {
+  id       String @id @default(cuid())
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  seatEmail   String
+  lastActiveAt DateTime?
+
+  @@index([vendorId])
+}
+
+enum BillingCadence {
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+enum RenewalState {
+  PENDING
+  RESOLVED
+}
+
+model Renewal {
+  id       String @id
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  dueAt        DateTime
+  amountCents  Int
+  currency     String         @default("USD")
+  cadence      BillingCadence
+  /// Billing cycle key. Idempotency is scoped to renewalId + cycleKey.
+  cycleKey     String
+  state        RenewalState   @default(PENDING)
+
+  priorCycleAmountCents Int?
+  previousAmountCents   Int?
+
+  @@unique([id, cycleKey])
+  @@index([state, dueAt])
+}
+
+model VendorMessage {
+  id       String @id @default(cuid())
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  receivedAt DateTime
+  subject    String
+  body       String
+  /// True when injected through the attack console. Recorded, never hidden.
+  injected   Boolean @default(false)
+
+  @@index([vendorId, receivedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Demo clock: system time is a database value, read and advanced explicitly.
+// ---------------------------------------------------------------------------
+
+model SystemState {
+  id           String   @id @default("singleton")
+  /// The current demo instant. Every timestamp in the system derives from this.
+  now          DateTime
+  /// When true, the next tick halts before adjudicating anything.
+  killSwitchOn Boolean  @default(false)
+}
