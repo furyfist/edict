@@ -45,4 +45,11 @@ export {
   type ListOptions,
 } from "./query";
 
+export {
+  getExplained,
+  listExplained,
+  listExplainedRefusals,
+  type ExplainedEntry,
+} from "./explained";
+
 export { AGENT, ENGINE, NETWORK, NOBODY, TICK, human } from "./actors";
