@@ -5,7 +5,7 @@ import { buildEvidenceBundle, selectDueRenewals } from "../evidence";
 import { propose } from "../agent";
 import { evaluate } from "../policy/engine";
 import { route } from "../outcome";
-import { hasEntryForCycle } from "../ledger";
+import { NOBODY, TICK, appendEntry, hasEntryForCycle } from "../ledger";
 import { getPravaAdapter } from "../prava";
 import type { PolicyRule, Verdict } from "../contracts";
 
@@ -36,7 +36,8 @@ export type HaltReason =
   | "NO_ACTIVE_POLICY"
   | "LOCK_CONTENTION"
   | "ADAPTER_UNHEALTHY"
-  | "CLOCK_UNINITIALIZED";
+  | "CLOCK_UNINITIALIZED"
+  | "UNHANDLED_ERROR";
 
 export interface TickResult {
   tickId: string | null;
@@ -82,6 +83,18 @@ export async function runTick(): Promise<TickResult> {
     ) {
       // Another tick holds the lock. Halting is the correct answer; queueing
       // behind it would mean two ticks adjudicating the same renewals.
+      //
+      // There is no tick row to attribute this to — this run never acquired
+      // one — so the entry is written against the run that does hold the lock.
+      const holder = await prisma.tickRun.findFirst({
+        where: { lockKey: LOCK_KEY },
+        select: { id: true },
+      });
+      await writeHaltEntry(
+        holder ? holder.id : "tick_unacquired",
+        "LOCK_CONTENTION",
+        clock.now,
+      );
       return { ...empty, haltReason: "LOCK_CONTENTION" };
     }
     throw error;
@@ -90,14 +103,14 @@ export async function runTick(): Promise<TickResult> {
   try {
     // ---- kill switch ----
     if (clock.killSwitchOn) {
-      return await halt(tickId, "KILL_SWITCH");
+      return await halt(tickId, "KILL_SWITCH", clock.now);
     }
 
     // ---- adapter health ----
     const adapter = getPravaAdapter();
     const health = await adapter.health();
     if (!health.healthy) {
-      return await halt(tickId, "ADAPTER_UNHEALTHY");
+      return await halt(tickId, "ADAPTER_UNHEALTHY", clock.now);
     }
 
     // ---- pin the policy version for the whole tick ----
@@ -108,7 +121,7 @@ export async function runTick(): Promise<TickResult> {
     });
 
     if (!policy) {
-      return await halt(tickId, "NO_ACTIVE_POLICY");
+      return await halt(tickId, "NO_ACTIVE_POLICY", clock.now);
     }
 
     const rules: PolicyRule[] = policy.rules.map((r) => ({
@@ -197,6 +210,7 @@ export async function runTick(): Promise<TickResult> {
     // makes every subsequent tick halt on contention, which turns one failure
     // into a permanently stopped system.
     await releaseLock(tickId);
+    await writeHaltEntry(tickId, "UNHANDLED_ERROR", clock.now);
     throw error;
   }
 }
@@ -218,14 +232,48 @@ function parseConditions(raw: unknown): PolicyRule["conditions"] {
   );
 }
 
+/**
+ * What each halt means, in the words the product uses to explain itself. A halt
+ * that only appears in a log is a halt nobody sees; these strings are what the
+ * ledger and the halted chrome render.
+ */
+const HALT_MESSAGES: Record<HaltReason, string> = {
+  KILL_SWITCH:
+    "The kill switch is engaged. No renewal was adjudicated and nothing was charged.",
+  NO_ACTIVE_POLICY:
+    "No policy version is active. Without a policy there is no authority to act under, so nothing was adjudicated.",
+  LOCK_CONTENTION:
+    "Another tick is already running. This one stopped rather than adjudicating the same renewals twice.",
+  ADAPTER_UNHEALTHY:
+    "The payment network is unreachable. Nothing was adjudicated and nothing was charged.",
+  CLOCK_UNINITIALIZED:
+    "The demo clock is not initialized. The system will not act without a known time.",
+  UNHANDLED_ERROR:
+    "The tick stopped on an unexpected error. Nothing further was adjudicated.",
+};
+
+/**
+ * Halting writes a ledger entry.
+ *
+ * A halt is a thing that happened and it belongs in the record alongside
+ * everything else. Writing it here rather than only to the tick row is what
+ * makes "the system stopped" visible on the surface people actually read — a
+ * silent halt is indistinguishable from a system that had nothing to do.
+ */
 async function halt(
   tickId: string,
   reason: HaltReason,
+  recordedAt?: Date,
 ): Promise<TickResult> {
   await prisma.tickRun.update({
     where: { id: tickId },
     data: { halted: true, haltReason: reason, lockKey: null },
   });
+
+  if (recordedAt) {
+    await writeHaltEntry(tickId, reason, recordedAt);
+  }
+
   return {
     tickId,
     halted: true,
@@ -236,6 +284,37 @@ async function halt(
     outcomes: {},
   };
 }
+
+async function writeHaltEntry(
+  tickId: string,
+  reason: HaltReason,
+  recordedAt: Date,
+): Promise<void> {
+  try {
+    await appendEntry({
+      recordedAt,
+      tickId,
+      vendorId: "system",
+      renewalId: null,
+      cycleKey: null,
+      outcome: "HALTED",
+      amount: null,
+      // Nobody decided and nobody authorized, because nothing was adjudicated.
+      // Saying so explicitly is more honest than attributing the halt to the
+      // agent or the engine, neither of which was consulted.
+      decidedBy: NOBODY,
+      authorizedBy: NOBODY,
+      executedBy: NOBODY,
+      recordedBy: TICK,
+      detail: { haltReason: reason, message: HALT_MESSAGES[reason] },
+    });
+  } catch {
+    // The tick row already records the halt. Failing to also write the ledger
+    // entry must not turn a halt into a crash.
+  }
+}
+
+export { HALT_MESSAGES };
 
 async function releaseLock(tickId: string): Promise<void> {
   try {
