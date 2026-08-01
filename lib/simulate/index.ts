@@ -24,3 +24,6 @@ export type { Battery } from "./battery";
 
 export { groupByEffect, summarize } from "./preview";
 export type { Preview, PreviewRow } from "./preview";
+
+export { diffReplays } from "./diff";
+export type { BehavioralDiff, VerdictChange, VerdictSide } from "./diff";

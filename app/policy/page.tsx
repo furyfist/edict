@@ -4,6 +4,7 @@ import { formatCents } from "@/lib/contracts/money";
 import type { Cents } from "@/lib/contracts";
 import { DbUnavailable, PageHeader } from "../_components/page-header";
 import { PolicyComposer } from "../_components/policy-composer";
+import { VersionDiff } from "../_components/version-diff";
 
 export const dynamic = "force-dynamic";
 
@@ -219,17 +220,28 @@ export default async function PolicyPage() {
               </h2>
               <ul className="mt-3 divide-y divide-neutral-800/80 border-y border-neutral-800/80">
                 {others.map((version) => (
-                  <li
-                    key={version.id}
-                    className="flex items-baseline justify-between gap-4 py-2.5"
-                  >
-                    <span className="truncate text-sm text-neutral-400">
-                      v{version.version} · {version.englishText.slice(0, 70)}
-                      {version.englishText.length > 70 ? "…" : ""}
-                    </span>
-                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-neutral-600">
-                      {version.status.toLowerCase()}
-                    </span>
+                  <li key={version.id} className="py-2.5">
+                    <div className="flex items-baseline justify-between gap-4">
+                      <span className="truncate text-sm text-neutral-400">
+                        v{version.version} · {version.englishText.slice(0, 70)}
+                        {version.englishText.length > 70 ? "…" : ""}
+                      </span>
+                      <span className="shrink-0 text-[10px] uppercase tracking-wide text-neutral-600">
+                        {version.status.toLowerCase()}
+                      </span>
+                    </div>
+                    {/*
+                      The diff runs against the ACTIVE version, because the
+                      question a person has about an old version is always the
+                      same one: what is different now?
+                    */}
+                    <div className="mt-1">
+                      <VersionDiff
+                        fromId={version.id}
+                        toId={active.id}
+                        label={`what changed between v${version.version} and v${active.version}?`}
+                      />
+                    </div>
                   </li>
                 ))}
               </ul>
