@@ -1,5 +1,6 @@
 import { prisma } from "./client";
 import { DEMO_EPOCH, plusDays, seedClock } from "../clock";
+import { MockPravaAdapter } from "../prava/mock";
 
 /**
  * Seed skeleton.
@@ -105,6 +106,97 @@ async function clear(): Promise<void> {
   await prisma.systemState.deleteMany();
 }
 
+/**
+ * The starting policy, written the way a finance lead would write it. The rules
+ * below are the compiled form of exactly these sentences, and each rule carries
+ * the sentence it came from so a refusal can quote it back.
+ */
+export const SEED_POLICY_TEXT = [
+  "Never renew anything from CloudSync Pro.",
+  "Renew anything under $100 automatically.",
+  "Anything with a price increase above 15% needs my approval.",
+  "Anything over $500 needs my approval.",
+].join("\n");
+
+async function seedPolicy(): Promise<void> {
+  const version = await prisma.policyVersion.create({
+    data: {
+      version: 1,
+      sourceText: SEED_POLICY_TEXT,
+      status: "ACTIVE",
+      createdAt: DEMO_EPOCH,
+      activatedAt: DEMO_EPOCH,
+      activatedBy: "user:finance-lead",
+    },
+  });
+
+  await prisma.policyRule.createMany({
+    data: [
+      {
+        policyVersionId: version.id,
+        ordinal: 1,
+        effect: "DENY",
+        conditions: [
+          { field: "VENDOR_ID", operator: "EQ", value: "vendor_cloudsync" },
+        ],
+        amountCeilingCents: null,
+        sourceFragment: "Never renew anything from CloudSync Pro.",
+        description: "Deny every renewal for CloudSync Pro.",
+      },
+      {
+        policyVersionId: version.id,
+        ordinal: 2,
+        effect: "REQUIRE_APPROVAL",
+        conditions: [
+          {
+            field: "PRICE_INCREASE_BASIS_POINTS",
+            operator: "GT",
+            value: 1500,
+          },
+        ],
+        amountCeilingCents: null,
+        sourceFragment:
+          "Anything with a price increase above 15% needs my approval.",
+        description: "Escalate renewals whose price rose by more than 15%.",
+      },
+      {
+        policyVersionId: version.id,
+        ordinal: 3,
+        effect: "REQUIRE_APPROVAL",
+        conditions: [{ field: "AMOUNT", operator: "GT", value: 500_00 }],
+        amountCeilingCents: null,
+        sourceFragment: "Anything over $500 needs my approval.",
+        description: "Escalate renewals above $500.00.",
+      },
+      {
+        policyVersionId: version.id,
+        ordinal: 4,
+        effect: "ALLOW_AUTO",
+        conditions: [{ field: "AMOUNT", operator: "LTE", value: 100_00 }],
+        // Every ALLOW_AUTO rule carries a ceiling. An allow rule without one is
+        // unbounded authority and the compiler refuses to produce it.
+        amountCeilingCents: 100_00,
+        sourceFragment: "Renew anything under $100 automatically.",
+        description: "Auto-renew charges at or below $100.00.",
+      },
+    ],
+  });
+}
+
+/** One mandate per vendor, sized to what the policy could ever permit. */
+async function seedMandates(): Promise<void> {
+  const adapter = new MockPravaAdapter();
+  for (const v of SKELETON_VENDORS) {
+    await adapter.createMandate({
+      vendorId: v.id,
+      merchantId: v.merchantId,
+      amountCeilingCents: 500_00,
+      currency: "USD",
+      expiresAt: plusDays(DEMO_EPOCH, 90).toISOString(),
+    });
+  }
+}
+
 export async function seed(): Promise<void> {
   await clear();
   await seedClock();
@@ -145,6 +237,9 @@ export async function seed(): Promise<void> {
       });
     }
   }
+
+  await seedPolicy();
+  await seedMandates();
 }
 
 async function main(): Promise<void> {

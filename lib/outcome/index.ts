@@ -172,7 +172,14 @@ async function executeCharge(input: RouteInput): Promise<RouteResult> {
   return { entryId, outcome: outcomeFor(result), duplicate: false };
 }
 
-function outcomeFor(result: ChargeResult): LedgerOutcome {
+/** The four outcomes a charge attempt can close with. Narrower than LedgerOutcome. */
+type ChargeOutcome =
+  | "EXECUTED"
+  | "APPROVED_AND_EXECUTED"
+  | "NETWORK_DECLINE"
+  | "ADAPTER_FAILURE";
+
+function outcomeFor(result: ChargeResult): ChargeOutcome {
   if (result.ok) return "EXECUTED";
   switch (result.kind) {
     case "DECLINED":
