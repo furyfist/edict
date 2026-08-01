@@ -5,6 +5,7 @@ import { buildEvidenceBundle, selectDueRenewals } from "../evidence";
 import { propose } from "../agent";
 import { evaluate } from "../policy/engine";
 import { route } from "../outcome";
+import { hasEntryForCycle } from "../ledger";
 import { getPravaAdapter } from "../prava";
 import type { PolicyRule, Verdict } from "../contracts";
 
@@ -132,6 +133,16 @@ export async function runTick(): Promise<TickResult> {
         renewalId,
         observedAt: clock.now,
       });
+
+      // Idempotency is checked here, before the agent is consulted and before
+      // the adapter is touched. The unique constraint on (renewalId, cycleKey)
+      // is the guarantee and this read is the optimization — a second tick
+      // should not spend a model call and a network round trip to discover
+      // that it has nothing to do. The stage button will be pressed twice.
+      if (await hasEntryForCycle(renewalId, bundle.renewal.cycleKey)) {
+        duplicates += 1;
+        continue;
+      }
 
       const proposalResult = await propose(bundle);
       const proposal = proposalResult.ok ? proposalResult.proposal : null;
