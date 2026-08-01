@@ -13,6 +13,7 @@
     "seed": "tsx lib/db/seed-cli.ts",
     "keygen": "tsx scripts/keygen.ts",
     "verify": "node scripts/verify-receipts.mjs",
+    "replay": "tsx scripts/replay-history.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
