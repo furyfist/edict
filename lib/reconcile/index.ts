@@ -15,3 +15,10 @@ export type {
   ReconcileInput,
   ReconcileOutput,
 } from "./core";
+
+export { runReconciliation, containmentSentence } from "./run";
+export type {
+  ContainmentStatus,
+  ReconciliationRun,
+  UnreadableMandate,
+} from "./run";

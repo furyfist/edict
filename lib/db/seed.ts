@@ -552,6 +552,15 @@ async function seedApprovals(input: {
  * sideways on stage is recovered in seconds rather than abandoned.
  */
 export async function resetDatabase(): Promise<void> {
+  // The proof plane goes first, and it MUST go.
+  //
+  // A claim anchored to a ledger head that no longer exists is not a stale
+  // record, it is a false one. And a surviving mock charge would show up in the
+  // next reconciliation as an ORPHAN_CHARGE — the system accusing itself of
+  // moving money without a record, because somebody pressed reseed.
+  await db.claim.deleteMany();
+  await db.mockCharge.deleteMany();
+
   await db.ledgerEntry.deleteMany();
   await db.tick.deleteMany();
   await db.approval.deleteMany();
