@@ -4,6 +4,8 @@ import type { Cents } from "@/lib/contracts";
 import { getClock, daysBetween } from "@/lib/clock";
 import { DbUnavailable, PageHeader } from "../_components/page-header";
 import { KillSwitch } from "../_components/kill-switch";
+import { BooksBalance } from "../_components/books-balance";
+import { latestAttestation } from "@/lib/reconcile/attest";
 
 export const dynamic = "force-dynamic";
 
@@ -31,9 +33,14 @@ export default async function AuthorityPage() {
   // every "expires in" figure quietly wrong.
   let clock: Date | null = null;
   let unavailable = false;
+  let attestation: Awaited<ReturnType<typeof latestAttestation>> = null;
 
   try {
     clock = await getClock();
+    // Read, never run. Reconciliation is a deliberate act with a signed record
+    // attached; a page load must not manufacture one every time somebody
+    // glances at this screen.
+    attestation = await latestAttestation();
     const state = await db.systemState.findUnique({ where: { id: "singleton" } });
     engaged = state?.killSwitchEngaged ?? false;
 
@@ -69,6 +76,22 @@ export default async function AuthorityPage() {
         <>
           <div className="mt-6">
             <KillSwitch engaged={engaged} />
+          </div>
+
+          <div className="mt-6">
+            <BooksBalance
+              initial={
+                attestation
+                  ? {
+                      ranAt: attestation.ranAt.toISOString(),
+                      ledgerHead: attestation.ledgerHead,
+                      attested: attestation.attested,
+                      stale: attestation.stale,
+                      subject: attestation.subject as never,
+                    }
+                  : null
+              }
+            />
           </div>
 
           {mandates.length === 0 ? (
