@@ -10,6 +10,7 @@ import { refreshAllMandates } from "@/lib/prava/mandates";
 import { expireStaleApprovals } from "@/lib/outcome/approvals";
 import { activePolicy } from "@/lib/policy/versions";
 import { cents } from "@/lib/contracts/money";
+import type { Agent } from "@/lib/agent";
 
 /**
  * The tick runner — unattended execution.
@@ -25,6 +26,39 @@ import { cents } from "@/lib/contracts/money";
 const LOOKAHEAD_DAYS = 7;
 /** A lock older than this is assumed abandoned by a crashed run. */
 const LOCK_STALE_MINUTES = 5;
+
+/**
+ * Overrides for a gauntlet run.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS AN OPTIONS BAG AND NOT A SECOND RUNNER
+ *
+ * Invariant 5: the demo must never exercise code the cron does not. Extended to
+ * the gauntlet, that means an attack run has to go through THIS function —
+ * the same lock, the same mandate refresh, the same policy pinning, the same
+ * idempotency check, the same outcome router. A parallel "adversarial runner"
+ * would produce results describing a different system, and the whole point of
+ * the exercise is that it describes this one.
+ *
+ * So the attack surface is exactly two substitutions: who proposes, and how the
+ * tick is labelled. Everything between them is untouched.
+ * ---------------------------------------------------------------------------
+ */
+export interface TickOptions {
+  /**
+   * Replaces the proposer for this tick.
+   *
+   * The gauntlet passes an attacker-controlled agent. Note what it cannot
+   * replace: the engine, the router, the ledger, or the adapter. An agent is
+   * the only component in this pipeline it is safe to hand to an attacker,
+   * which is the property being measured.
+   */
+  agent?: Agent;
+  /** Tags the tick. Defaults to operational. */
+  runContext?: "OPERATIONAL" | "ADVERSARIAL";
+  /** The corpus entry being delivered, on gauntlet ticks. */
+  attackId?: string | null;
+}
 
 export interface TickReport {
   tickId: string | null;
@@ -85,7 +119,15 @@ async function releaseLock(holder: string): Promise<void> {
   });
 }
 
-export async function runTick(): Promise<TickReport> {
+export async function runTick(options: TickOptions = {}): Promise<TickReport> {
+  // Applied once, here, so every tick row written below carries the same labels
+  // — including the halted ones. A gauntlet run that halts is still a gauntlet
+  // run, and losing its tag would quietly move it into the operational view.
+  const label = {
+    runContext: options.runContext ?? "OPERATIONAL",
+    attackId: options.attackId ?? null,
+  } as const;
+
   const state = await ensureSystemState();
   const clock = state.demoClock;
   const holder = randomUUID();
@@ -111,7 +153,7 @@ export async function runTick(): Promise<TickReport> {
     // silently obeyed — a halt must always be visible.
     if (state.killSwitchEngaged) {
       await db.tick.create({
-        data: { clockAt: clock, status: "HALTED", haltReason: "KILL_SWITCH" },
+        data: { clockAt: clock, status: "HALTED", haltReason: "KILL_SWITCH", ...label },
       });
       return halted(clock, "KILL_SWITCH", outcomes);
     }
@@ -123,6 +165,7 @@ export async function runTick(): Promise<TickReport> {
           clockAt: clock,
           status: "HALTED",
           haltReason: "ADAPTER_UNAVAILABLE",
+          ...label,
         },
       });
       return halted(clock, "ADAPTER_UNAVAILABLE", outcomes);
@@ -142,7 +185,7 @@ export async function runTick(): Promise<TickReport> {
     const policy = await activePolicy();
     if (!policy) {
       await db.tick.create({
-        data: { clockAt: clock, status: "HALTED", haltReason: "NO_POLICY" },
+        data: { clockAt: clock, status: "HALTED", haltReason: "NO_POLICY", ...label },
       });
       return {
         tickId: null,
@@ -156,7 +199,7 @@ export async function runTick(): Promise<TickReport> {
     }
 
     const tick = await db.tick.create({
-      data: { clockAt: clock, policyVersionId: policy.id, status: "RUNNING" },
+      data: { clockAt: clock, policyVersionId: policy.id, status: "RUNNING", ...label },
     });
     openTickId = tick.id;
 
@@ -180,7 +223,9 @@ export async function runTick(): Promise<TickReport> {
       })
       .sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
 
-    const agent = activeAgent();
+    // The one substitution the gauntlet makes. Defaults to the real proposer,
+    // so the cron path is byte-for-byte what it was.
+    const agent = options.agent ?? activeAgent();
     let processed = 0;
     let skipped = 0;
 

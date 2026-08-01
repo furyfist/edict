@@ -1,5 +1,5 @@
 import { digestOf } from "../attest/canonical";
-import type { Outcome, VerdictCode } from "../contracts";
+import type { Outcome, RefusalCode } from "../contracts";
 
 /**
  * THE ATTACK CORPUS — safety, restated as a measurement.
@@ -171,16 +171,28 @@ export interface AttackEntry {
   /**
    * What the defence must produce for this attack to have FAILED.
    *
-   * Stated as a set, because more than one honest outcome can mean the defence
-   * held: an over-ceiling proposal may be escalated by the engine, or refused
-   * by the network if the engine is bypassed. Both are the system working.
+   * ---------------------------------------------------------------------------
+   * STATED IN TERMS OF WHAT THE LEDGER RECORDS, NOT WHAT THE ENGINE THINKS.
    *
-   * An empty expectation would make every attack unfalsifiable, so there is no
-   * way to express one.
+   * `outcome` and `refusalCode` are both fields on a signed ledger entry. The
+   * engine's internal `VerdictCode` is not — it is mapped to a refusal code on
+   * the way to storage and then discarded.
+   *
+   * That matters more than it looks. The adversarial record has to be checkable
+   * offline by someone holding nothing but the exported bundle. An expectation
+   * phrased against a value that never reaches the record could only ever be
+   * confirmed by trusting us, which is the one thing this project refuses to
+   * ask for.
+   *
+   * Stated as sets, because more than one honest result can mean the defence
+   * held. An empty expectation would make an attack unfalsifiable, so there is
+   * no way to express one.
+   * ---------------------------------------------------------------------------
    */
   expect: {
     outcome: Outcome[];
-    verdictCode?: VerdictCode[];
+    /** Omitted for escalations, which record no refusal code. */
+    refusalCode?: RefusalCode[];
   };
   /** Present on generated entries. Null for hand-written corpus v1. */
   generatedBy: string | null;
@@ -301,7 +313,6 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["ESCALATED"],
-      verdictCode: ["OVER_MANDATE_CEILING"],
     },
     generatedBy: null,
   },
@@ -324,7 +335,6 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["ESCALATED"],
-      verdictCode: ["OVER_MANDATE_CEILING"],
     },
     generatedBy: null,
   },
@@ -349,7 +359,7 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["REFUSED"],
-      verdictCode: ["MALFORMED_PROPOSAL"],
+      refusalCode: ["MALFORMED_PROPOSAL"],
     },
     generatedBy: null,
   },
@@ -372,7 +382,7 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["REFUSED"],
-      verdictCode: ["MALFORMED_PROPOSAL"],
+      refusalCode: ["MALFORMED_PROPOSAL"],
     },
     generatedBy: null,
   },
@@ -394,7 +404,7 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["REFUSED"],
-      verdictCode: ["MALFORMED_PROPOSAL"],
+      refusalCode: ["MALFORMED_PROPOSAL"],
     },
     generatedBy: null,
   },
@@ -416,7 +426,7 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["REFUSED"],
-      verdictCode: ["UNSUPPORTED_CURRENCY"],
+      refusalCode: ["UNSUPPORTED_CURRENCY"],
     },
     generatedBy: null,
   },
@@ -442,7 +452,7 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["REFUSED"],
-      verdictCode: ["RULE_MATCHED"],
+      refusalCode: ["POLICY_DENIED"],
     },
     generatedBy: null,
   },
@@ -468,7 +478,6 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["ESCALATED"],
-      verdictCode: ["EVIDENCE_INCOMPLETE"],
     },
     generatedBy: null,
   },
@@ -494,7 +503,7 @@ const ENTRIES: AttackEntry[] = [
     },
     expect: {
       outcome: ["REFUSED"],
-      verdictCode: ["MANDATE_NOT_CHARGEABLE"],
+      refusalCode: ["MANDATE_INACTIVE"],
     },
     generatedBy: null,
   },
