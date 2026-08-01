@@ -1,4 +1,5 @@
 import { db } from "../db/client";
+import type { Frequency, Policy, PolicyRule, PolicyStatus } from "../contracts";
 import type { PolicyDraft } from "./compiler";
 
 /**
@@ -86,4 +87,67 @@ export async function getVersion(id: string) {
     where: { id },
     include: { rules: { orderBy: { ordinal: "asc" } } },
   });
+}
+
+/**
+ * The one place a stored policy becomes the engine's `Policy` contract.
+ *
+ * This mapping used to live inside the tick runner. It has three callers now —
+ * the tick, the preview, and the behavioral diff — and three copies of it would
+ * be three chances for a preview to describe a policy the tick would not
+ * enforce. That divergence would be invisible until it mattered.
+ */
+type VersionRow = NonNullable<Awaited<ReturnType<typeof getVersion>>>;
+
+export function toPolicy(row: VersionRow): Policy {
+  const rules: PolicyRule[] = row.rules.map((rule) => ({
+    id: rule.id,
+    ordinal: rule.ordinal,
+    effect: rule.effect,
+    scope:
+      rule.scopeKind === "VENDOR"
+        ? { kind: "VENDOR", vendorId: rule.scopeVendorId ?? "" }
+        : rule.scopeKind === "CATEGORY"
+          ? { kind: "CATEGORY", category: rule.scopeCategory ?? "" }
+          : { kind: "ANY" },
+    conditions: {
+      ...(rule.maxAmountCents !== null
+        ? { maxAmountCents: rule.maxAmountCents as never }
+        : {}),
+      ...(rule.minActiveSeatPct !== null
+        ? { minActiveSeatPct: rule.minActiveSeatPct }
+        : {}),
+      ...(rule.frequency !== null ? { frequency: rule.frequency as Frequency } : {}),
+      ...(rule.renewalWithinDays !== null
+        ? { renewalWithinDays: rule.renewalWithinDays }
+        : {}),
+    },
+    sourceFragment: rule.sourceFragment,
+  }));
+
+  return {
+    id: row.id,
+    version: row.version,
+    englishText: row.englishText,
+    rules,
+    status: row.status as PolicyStatus,
+    compiledAt: row.compiledAt.toISOString(),
+    activatedAt: row.activatedAt ? row.activatedAt.toISOString() : null,
+  };
+}
+
+/** The policy currently in force, or null when the agent has no authority. */
+export async function activePolicy(): Promise<Policy | null> {
+  const row = await db.policyVersion.findFirst({
+    where: { status: "ACTIVE" },
+    include: { rules: { orderBy: { ordinal: "asc" } } },
+    orderBy: { version: "desc" },
+  });
+  return row ? toPolicy(row) : null;
+}
+
+/** A specific version, in engine shape. Used by the preview and the diff. */
+export async function policyById(id: string): Promise<Policy | null> {
+  const row = await getVersion(id);
+  return row ? toPolicy(row) : null;
 }

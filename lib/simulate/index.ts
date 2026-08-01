@@ -21,3 +21,6 @@ export type {
 
 export { BATTERY_VERSION, EDGE_KINDS, buildBattery } from "./battery";
 export type { Battery } from "./battery";
+
+export { groupByEffect, summarize } from "./preview";
+export type { Preview, PreviewRow } from "./preview";

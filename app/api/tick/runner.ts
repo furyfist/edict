@@ -8,8 +8,8 @@ import { appendEntry, hasEntryForCycle } from "@/lib/ledger";
 import { paymentBoundary } from "@/lib/prava";
 import { refreshAllMandates } from "@/lib/prava/mandates";
 import { expireStaleApprovals } from "@/lib/outcome/approvals";
+import { activePolicy } from "@/lib/policy/versions";
 import { cents } from "@/lib/contracts/money";
-import type { Frequency, Policy, PolicyRule } from "@/lib/contracts";
 
 /**
  * The tick runner — unattended execution.
@@ -85,51 +85,6 @@ async function releaseLock(holder: string): Promise<void> {
   });
 }
 
-/** Loads the active policy and shapes it into the engine's contract. */
-async function loadActivePolicy(): Promise<Policy | null> {
-  const row = await db.policyVersion.findFirst({
-    where: { status: "ACTIVE" },
-    include: { rules: { orderBy: { ordinal: "asc" } } },
-    orderBy: { version: "desc" },
-  });
-  if (!row) return null;
-
-  const rules: PolicyRule[] = row.rules.map((rule) => ({
-    id: rule.id,
-    ordinal: rule.ordinal,
-    effect: rule.effect,
-    scope:
-      rule.scopeKind === "VENDOR"
-        ? { kind: "VENDOR", vendorId: rule.scopeVendorId ?? "" }
-        : rule.scopeKind === "CATEGORY"
-          ? { kind: "CATEGORY", category: rule.scopeCategory ?? "" }
-          : { kind: "ANY" },
-    conditions: {
-      ...(rule.maxAmountCents !== null
-        ? { maxAmountCents: rule.maxAmountCents as never }
-        : {}),
-      ...(rule.minActiveSeatPct !== null
-        ? { minActiveSeatPct: rule.minActiveSeatPct }
-        : {}),
-      ...(rule.frequency !== null ? { frequency: rule.frequency as Frequency } : {}),
-      ...(rule.renewalWithinDays !== null
-        ? { renewalWithinDays: rule.renewalWithinDays }
-        : {}),
-    },
-    sourceFragment: rule.sourceFragment,
-  }));
-
-  return {
-    id: row.id,
-    version: row.version,
-    englishText: row.englishText,
-    rules,
-    status: "ACTIVE",
-    compiledAt: row.compiledAt.toISOString(),
-    activatedAt: row.activatedAt ? row.activatedAt.toISOString() : null,
-  };
-}
-
 export async function runTick(): Promise<TickReport> {
   const state = await ensureSystemState();
   const clock = state.demoClock;
@@ -184,7 +139,7 @@ export async function runTick(): Promise<TickReport> {
     await expireStaleApprovals(clock);
 
     // Pinned once. A policy edit mid-tick cannot affect decisions in flight.
-    const policy = await loadActivePolicy();
+    const policy = await activePolicy();
     if (!policy) {
       await db.tick.create({
         data: { clockAt: clock, status: "HALTED", haltReason: "NO_POLICY" },
