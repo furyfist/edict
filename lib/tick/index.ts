@@ -7,6 +7,7 @@ import { evaluate } from "../policy/engine";
 import { route } from "../outcome";
 import { NOBODY, TICK, appendEntry, hasEntryForCycle } from "../ledger";
 import { getPravaAdapter } from "../prava";
+import { refreshMandateMirror } from "../prava/mandates";
 import type { PolicyRule, Verdict } from "../contracts";
 
 /**
@@ -47,6 +48,8 @@ export interface TickResult {
   written: number;
   duplicates: number;
   outcomes: Record<string, number>;
+  /** Mandate mirror refresh result. Surfaced, never swallowed. */
+  mirror?: { refreshed: number; failed: number; errors: string[] };
 }
 
 export async function runTick(): Promise<TickResult> {
@@ -112,6 +115,18 @@ export async function runTick(): Promise<TickResult> {
     if (!health.healthy) {
       return await halt(tickId, "ADAPTER_UNHEALTHY", clock.now);
     }
+
+    // ---- refresh the mandate mirror before adjudicating anything ----
+    //
+    // Prava owns mandate status and remaining authority; the local rows are a
+    // cache. Adjudicating against a stale cache means deciding on facts that
+    // were true at some earlier point, and the whole claim of the authority
+    // page is that the remaining figure it shows is the real one.
+    //
+    // A refresh failure does not halt: the tick continues on last-known state
+    // and records that it did. Halting the system because one mandate read
+    // timed out trades a small inaccuracy for a total outage.
+    const mirror = await refreshMandateMirror(adapter);
 
     // ---- pin the policy version for the whole tick ----
     const policy = await prisma.policyVersion.findFirst({
@@ -204,6 +219,7 @@ export async function runTick(): Promise<TickResult> {
       written,
       duplicates,
       outcomes,
+      mirror,
     };
   } catch (error) {
     // Release the lock before rethrowing. A tick that dies holding the lock
