@@ -18,3 +18,6 @@ export type {
   ScenarioOrigin,
   ScenarioVerdict,
 } from "./core";
+
+export { BATTERY_VERSION, EDGE_KINDS, buildBattery } from "./battery";
+export type { Battery } from "./battery";
