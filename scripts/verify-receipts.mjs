@@ -1,0 +1,268 @@
+#!/usr/bin/env node
+/**
+ * OFFLINE RECEIPT VERIFIER
+ *
+ *   node scripts/verify-receipts.mjs <bundle.json>
+ *   curl -s http://localhost:3000/api/receipts > b.json && node scripts/verify-receipts.mjs b.json
+ *
+ * Copy this one file and a bundle onto any machine with Node. No npm install,
+ * no database, no network, no access to the Spend Guardian source.
+ *
+ * ---------------------------------------------------------------------------
+ * THE DUPLICATION BELOW IS DELIBERATE. DO NOT "FIX" IT.
+ *
+ * `canonicalize` here is a second, independent implementation of the rules
+ * documented in lib/attest/canonical.ts. It imports nothing from lib/ on
+ * purpose: a verifier that shares code with the signer only proves that we
+ * agree with ourselves, which is not what anyone is asking.
+ *
+ * If you change the canonicalization rules in lib/attest, change them here too.
+ * lib/attest/verifier-conformance.test.ts is what tells you that you forgot —
+ * it runs this exact file against freshly signed bundles and fails the build
+ * when the two implementations disagree. Run `npm run test` after touching
+ * either one.
+ * ---------------------------------------------------------------------------
+ *
+ * Exit code 0 when everything verifies, 1 otherwise.
+ */
+
+import { createHash, verify as edVerify } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+const GENESIS =
+  "0000000000000000000000000000000000000000000000000000000000000000";
+
+// -- canonicalization, re-implemented from the documented rules --------------
+
+function esc(s) {
+  return JSON.stringify(s.normalize("NFC"));
+}
+
+function canonicalize(value) {
+  if (value === null) return "null";
+  const t = typeof value;
+  if (t === "string") return esc(value);
+  if (t === "number") {
+    if (!Number.isFinite(value)) throw new Error("non-finite number");
+    return JSON.stringify(value);
+  }
+  if (t === "boolean") return value ? "true" : "false";
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => (v === undefined ? "null" : canonicalize(v))).join(",")}]`;
+  }
+  if (t === "object") {
+    const parts = [];
+    for (const key of Object.keys(value).sort()) {
+      if (value[key] === undefined) continue;
+      parts.push(`${esc(key)}:${canonicalize(value[key])}`);
+    }
+    return `{${parts.join(",")}}`;
+  }
+  throw new Error(`unsupported ${t}`);
+}
+
+function sha256Hex(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+// -- verification ------------------------------------------------------------
+
+function verifyEntry(item, publicKeyB64, expectedPrev) {
+  const { record, receipt } = item;
+
+  if (!receipt || !receipt.digest) return "UNATTESTED";
+
+  if (expectedPrev !== null && receipt.prevDigest !== expectedPrev) {
+    return "BROKEN_LINK";
+  }
+
+  const payload = {
+    canonVersion: receipt.canonVersion,
+    prevDigest: receipt.prevDigest,
+    record,
+  };
+
+  let canonical;
+  try {
+    canonical = canonicalize(payload);
+  } catch {
+    return "INVALID";
+  }
+
+  if (sha256Hex(canonical) !== receipt.digest) return "INVALID";
+
+  if (!receipt.signature) return "UNATTESTED";
+  if (!publicKeyB64) return "UNATTESTED";
+
+  try {
+    const ok = edVerify(
+      null,
+      Buffer.from(canonical, "utf8"),
+      {
+        key: Buffer.from(publicKeyB64, "base64"),
+        format: "der",
+        type: "spki",
+      },
+      Buffer.from(receipt.signature, "base64"),
+    );
+    return ok ? "VALID" : "INVALID";
+  } catch {
+    return "INVALID";
+  }
+}
+
+// -- reporting ---------------------------------------------------------------
+
+const MARK = {
+  VALID: "  ok  ",
+  INVALID: " FAIL ",
+  BROKEN_LINK: " BREAK",
+  UNATTESTED: " none ",
+};
+
+function day(value) {
+  return typeof value === "string" ? value.slice(0, 10) : "??????????";
+}
+
+function text(value, width) {
+  return String(value ?? "-").padEnd(width);
+}
+
+function money(cents) {
+  if (typeof cents !== "number") return "-";
+  return `$${(cents / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function describeAuthority(record) {
+  const lines = [];
+  const a = record.authorizedBy;
+
+  if (a) {
+    lines.push(`      authorised by  policy v${a.policyVersion}, rule ordinal ${a.ruleOrdinal}`);
+    lines.push(`      the sentence   "${a.sourceFragment}"`);
+    if (a.approverId) {
+      lines.push(
+        `      approved by    ${a.approverId}` +
+          (a.passkeyAt ? ` with a passkey at ${a.passkeyAt}` : " in-app (no new authority)"),
+      );
+    }
+  } else {
+    lines.push("      authorised by  nothing — no rule was cited");
+  }
+
+  const d = record.decidedBy;
+  if (d) {
+    lines.push(`      decided by     ${d.modelId}${d.stubbed ? " (deterministic fallback)" : ""}`);
+  }
+
+  const e = record.executedBy;
+  lines.push(
+    e
+      ? `      executed by    ${e.provider} mandate ${e.mandateId}, charge ${e.chargeId ?? "none"}`
+      : "      executed by    nobody — no money moved",
+  );
+
+  return lines;
+}
+
+// -- main --------------------------------------------------------------------
+
+const path = process.argv[2];
+if (!path) {
+  console.error("usage: node scripts/verify-receipts.mjs <bundle.json>");
+  process.exit(2);
+}
+
+let bundle;
+try {
+  bundle = JSON.parse(readFileSync(path, "utf8"));
+} catch (error) {
+  console.error(`could not read ${path}: ${error.message}`);
+  process.exit(2);
+}
+
+if (bundle.format !== "spend-guardian-receipts") {
+  console.error(`not a Spend Guardian receipt bundle (format: ${bundle.format})`);
+  process.exit(2);
+}
+
+if (!Array.isArray(bundle.entries)) {
+  console.error("malformed bundle: `entries` is missing or is not a list");
+  process.exit(2);
+}
+
+const publicKeyB64 = bundle.key ? bundle.key.publicKeyB64 : null;
+
+console.log("");
+console.log("Spend Guardian — offline receipt verification");
+console.log(`  bundle      ${path}`);
+console.log(`  exported    ${bundle.exportedAt}`);
+console.log(`  canon       ${bundle.canonVersion}`);
+console.log(
+  `  key         ${bundle.key ? `${bundle.key.algorithm} ${bundle.key.keyId}` : "none — bundle is unattested"}`,
+);
+console.log(`  entries     ${bundle.entries.length}${bundle.partial ? " (partial — a slice, not the whole ledger)" : ""}`);
+console.log("");
+
+// A partial bundle cannot prove nothing was removed before its first entry, so
+// its first link is not checked against genesis. Say so rather than implying a
+// guarantee we do not have.
+let expectedPrev = bundle.partial ? null : GENESIS;
+const tally = { VALID: 0, INVALID: 0, BROKEN_LINK: 0, UNATTESTED: 0 };
+
+for (const item of bundle.entries) {
+  const status = verifyEntry(item, publicKeyB64, expectedPrev);
+  tally[status] += 1;
+
+  const r = item.record;
+
+  // Display fields are read defensively. A verifier's job is to return a
+  // verdict on whatever it is handed, including a file someone has just
+  // hand-edited in front of us — crashing on a missing field would turn a
+  // successful detection into a stack trace at the worst possible moment.
+  // None of this affects the verdict: `verifyEntry` above reads the canonical
+  // payload, not these.
+  console.log(
+    `[${MARK[status]}] ${day(r.clockAt)}  ${text(r.vendorName, 14)} ` +
+      `${text(r.outcome, 10)} ${money(r.amountCents).padStart(12)}`,
+  );
+
+  if (status === "VALID") {
+    for (const line of describeAuthority(r)) console.log(line);
+  } else if (status === "INVALID") {
+    console.log("      !! this record does not match its signature — it was altered after it was written");
+  } else if (status === "BROKEN_LINK") {
+    console.log(`      !! chain break — expected previous digest ${expectedPrev}`);
+    console.log(`         but this entry links to            ${item.receipt.prevDigest}`);
+    console.log("         an entry was removed, reordered, or inserted");
+  } else {
+    console.log("      -- no signature. Written before receipts existed, or with no key configured.");
+  }
+
+  console.log("");
+
+  // Continue from what this entry actually claims, so one break does not
+  // cascade into every later entry reporting the same failure twice.
+  expectedPrev = item.receipt ? item.receipt.digest : expectedPrev;
+}
+
+const failed = tally.INVALID + tally.BROKEN_LINK;
+
+console.log("---");
+console.log(
+  `  ${tally.VALID} verified · ${tally.INVALID} altered · ${tally.BROKEN_LINK} chain breaks · ${tally.UNATTESTED} unattested`,
+);
+console.log("");
+console.log(
+  failed === 0
+    ? "  CHAIN INTACT. Every signed entry matches its signature and its position."
+    : "  CHAIN COMPROMISED. This ledger has been modified since it was written.",
+);
+console.log("");
+console.log(`  ${bundle.notice}`);
+console.log("");
+
+process.exit(failed === 0 ? 0 : 1);
