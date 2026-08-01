@@ -6,7 +6,7 @@
  *   curl -s http://localhost:3000/api/receipts > b.json && node scripts/verify-receipts.mjs b.json
  *
  * Copy this one file and a bundle onto any machine with Node. No npm install,
- * no database, no network, no access to the Spend Guardian source.
+ * no database, no network, no access to the Edict source.
  *
  * ---------------------------------------------------------------------------
  * THE DUPLICATION BELOW IS DELIBERATE. DO NOT "FIX" IT.
@@ -184,8 +184,8 @@ try {
   process.exit(2);
 }
 
-if (bundle.format !== "spend-guardian-receipts") {
-  console.error(`not a Spend Guardian receipt bundle (format: ${bundle.format})`);
+if (bundle.format !== "edict-receipts") {
+  console.error(`not an Edict receipt bundle (format: ${bundle.format})`);
   process.exit(2);
 }
 
@@ -197,7 +197,7 @@ if (!Array.isArray(bundle.entries)) {
 const publicKeyB64 = bundle.key ? bundle.key.publicKeyB64 : null;
 
 console.log("");
-console.log("Spend Guardian — offline receipt verification");
+console.log("Edict — offline receipt verification");
 console.log(`  bundle      ${path}`);
 console.log(`  exported    ${bundle.exportedAt}`);
 console.log(`  canon       ${bundle.canonVersion}`);

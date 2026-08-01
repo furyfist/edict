@@ -37,7 +37,7 @@ export interface BundleItem {
 }
 
 export interface ReceiptBundle {
-  format: "spend-guardian-receipts";
+  format: "edict-receipts";
   formatVersion: 1;
   canonVersion: string;
   /** Wall clock. Operational metadata, not part of any signature. */
@@ -88,7 +88,7 @@ export async function buildBundle(options: { entryId?: string } = {}): Promise<
   }));
 
   return {
-    format: "spend-guardian-receipts",
+    format: "edict-receipts",
     formatVersion: 1,
     canonVersion: CANON_VERSION,
     exportedAt: new Date().toISOString(),

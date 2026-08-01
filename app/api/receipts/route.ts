@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const filename = entryId
     ? `receipt-${entryId.slice(0, 8)}.json`
-    : "spend-guardian-receipts.json";
+    : "edict-receipts.json";
 
   const headers: Record<string, string> = {
     "content-type": "application/json; charset=utf-8",

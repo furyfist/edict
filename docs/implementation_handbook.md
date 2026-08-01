@@ -1,4 +1,4 @@
-# Spend Guardian — Implementation Handbook
+# Edict — Implementation Handbook
 
 **Status:** Final planning document. Implementation begins after this.
 
@@ -8,7 +8,7 @@
 
 ## Project Overview
 
-Spend Guardian is an agent that holds a company's software budget under delegated, network-enforced authority. A human writes a spending policy in English. The policy compiles into Prava mandates. An agent proposes renewal actions unattended, a deterministic engine adjudicates them, and Prava executes what is permitted. Everything that happens is appended to a ledger that names four separate actors: who decided, who authorized, who executed, who recorded.
+Edict is an agent that holds a company's software budget under delegated, network-enforced authority. A human writes a spending policy in English. The policy compiles into Prava mandates. An agent proposes renewal actions unattended, a deterministic engine adjudicates them, and Prava executes what is permitted. Everything that happens is appended to a ledger that names four separate actors: who decided, who authorized, who executed, who recorded.
 
 The product's claim is not that the agent is clever. It is that the agent cannot exceed its authority even when it is wrong, manipulated, or compromised.
 

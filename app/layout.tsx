@@ -6,7 +6,7 @@ import { Nav } from "./_components/nav";
 import { HaltedBanner } from "./_components/halted-banner";
 
 export const metadata: Metadata = {
-  title: "Spend Guardian",
+  title: "Edict",
   description:
     "An agent that holds a software budget under delegated, network-enforced authority.",
 };
@@ -33,8 +33,8 @@ export default function RootLayout({
           <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-3">
             <div className="flex items-center gap-6">
               <span className="text-sm font-semibold tracking-tight">
-                Spend Guardian
-              </span>
+                Edict
+</span>
               <Nav />
             </div>
             <ClockDisplay />

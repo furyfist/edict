@@ -167,7 +167,7 @@ and hash-linked to the one before it.
 Have them run it on their own machine, with wifi off:
 
 ```bash
-node scripts/verify-receipts.mjs spend-guardian-receipts.json
+node scripts/verify-receipts.mjs edict-receipts.json
 ```
 
 It resolves each entry back to the sentence the owner wrote. Then say, out loud,

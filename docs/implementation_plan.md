@@ -1,4 +1,4 @@
-# Spend Guardian — Implementation Roadmap
+# Edict — Implementation Roadmap
 
 Execution planning only. Architecture frozen. Four people, six days, one repository.
 

@@ -6,7 +6,7 @@ I could not resolve exact API reference paths (the URLs 404 from outside), so al
 
 ---
 
-# Spend Guardian — Engineering Design Specification
+# Edict — Engineering Design Specification
 
 **Status:** Frozen. **Environment:** one, demo. **Language:** TypeScript, single app.
 

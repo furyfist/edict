@@ -109,7 +109,7 @@ function bundleOf(records: Array<Record<string, unknown>>) {
   });
 
   return {
-    format: "spend-guardian-receipts",
+    format: "edict-receipts",
     formatVersion: 1,
     canonVersion: "sg-canon-1",
     exportedAt: "2026-03-01T09:00:00.000Z",
