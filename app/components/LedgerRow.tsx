@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ExplainedEntry } from "@/lib/ledger";
+import { EntryDetail } from "./EntryDetail";
 import { AgentProse, Attribution, OutcomeBadge, PravaId } from "./ui";
 
 /**
@@ -98,11 +99,14 @@ export function LedgerRow({
         </>
       ) : (
         <div style={{ marginTop: 10, display: "flex", gap: 12, alignItems: "center" }}>
+          {/* The modal is the primary expansion surface; the route is the
+              shareable one. Both render the same component. */}
+          <EntryDetail item={item} />
           <Link
             href={`/ledger/${entry.id}`}
-            style={{ color: "var(--accent)", fontSize: 12 }}
+            style={{ color: "var(--muted)", fontSize: 12 }}
           >
-            Full attribution chain →
+            permalink
           </Link>
           {entry.prava.chargeId ? (
             <PravaId label="charge" value={entry.prava.chargeId} />
