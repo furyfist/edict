@@ -1,4 +1,5 @@
 import { cents } from "../contracts/money";
+import { isAction } from "../contracts";
 import { evaluate } from "../policy/engine";
 import {
   counterfactualLine,
@@ -6,6 +7,7 @@ import {
   refusalCodeFor,
 } from "../explain";
 import type {
+  Action,
   AuthorizedBy,
   Cents,
   DecidedBy,
@@ -105,6 +107,30 @@ export async function routeOutcome(
     passkeyAt: null,
   };
 
+  /**
+   * The proposed action, coerced into the closed set before it reaches storage.
+   *
+   * ---------------------------------------------------------------------------
+   * FOUND BY THE GAUNTLET, ON ITS FIRST FULL RUN.
+   *
+   * `proposedAction` is a database enum. An attacker who owns the proposer can
+   * emit an action outside that enum — `TRANSFER_FUNDS` is in the corpus — and
+   * the engine correctly refuses it as MALFORMED_PROPOSAL. But the WRITE of that
+   * refusal then threw, and the whole tick died with it.
+   *
+   * So the refusal was right and unrecordable, which is the worst combination
+   * available: an attacker could not move money, but could reliably stop the
+   * agent from working and leave nothing in the record explaining why.
+   *
+   * The raw value is not lost — it is already inside the frozen evidence and the
+   * verdict detail, and ESCALATE is the same sentinel the runner uses when the
+   * agent's output fails its contract upstream.
+   * ---------------------------------------------------------------------------
+   */
+  const recordedAction: Action = isAction(proposal.action)
+    ? proposal.action
+    : "ESCALATE";
+
   // CAPTURE BEFORE CHARGE. Everything needed to reconstruct the record exists
   // before any money is touched. Do not move this below the charge.
   const draft: LedgerDraft = {
@@ -114,7 +140,7 @@ export async function routeOutcome(
     vendorName: evidence.vendorName,
     renewalId: evidence.renewalId,
     cycleStart: new Date(`${evidence.cycleStart}T00:00:00.000Z`),
-    proposedAction: proposal.action,
+    proposedAction: recordedAction,
     proposedAmountCents: proposal.amountCents,
     decidedBy: input.decidedBy,
     authorizedBy,
