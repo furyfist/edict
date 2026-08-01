@@ -16,6 +16,7 @@ export {
   countsByOutcome,
   verifiedChain,
   verifyEntry,
+  ledgerHead,
 } from "./read";
 export type { VerifiedEntry } from "./read";
 

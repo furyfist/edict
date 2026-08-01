@@ -1,4 +1,5 @@
 import { listVersions } from "@/lib/policy/versions";
+import { activationFor } from "@/lib/policy/activation";
 import { formatCents } from "@/lib/contracts/money";
 import type { Cents } from "@/lib/contracts";
 import { DbUnavailable, PageHeader } from "../_components/page-header";
@@ -75,6 +76,14 @@ export default async function PolicyPage() {
   const active = versions.find((version) => version.status === "ACTIVE");
   const others = versions.filter((version) => version.status !== "ACTIVE");
 
+  // The activation record for the policy in force. Absent for versions
+  // activated before records existed — rendered as absent, never as unproven.
+  const activation = active && !unavailable ? await activationFor(active.id) : null;
+  const activationSubject = activation?.subject as
+    | { previewDigest?: string | null; scenarioCount?: number | null; counts?: Record<string, number> | null }
+    | null
+    | undefined;
+
   return (
     <section>
       <PageHeader
@@ -104,6 +113,63 @@ export default async function PolicyPage() {
               <blockquote className="mt-3 border-l-2 border-neutral-700 pl-3 text-sm leading-relaxed text-neutral-200">
                 {active.englishText}
               </blockquote>
+
+              {/*
+                The activation record. Three states, never two: attested, written
+                but unsigned, and absent. An activation with no record is not a
+                suspicious activation — it is one that predates records, and
+                saying so is cheaper than implying otherwise.
+              */}
+              {activation ? (
+                <div className="mt-4 rounded border border-neutral-800 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                        activation.receiptSignature
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                          : "border-neutral-700 text-neutral-400"
+                      }`}
+                    >
+                      {activation.receiptSignature ? "attested" : "unattested"}
+                    </span>
+                    <span className="text-xs text-neutral-400">
+                      activation record
+                    </span>
+                  </div>
+
+                  <p className="mt-2 text-xs leading-relaxed text-neutral-400">
+                    {activationSubject?.previewDigest
+                      ? `Granted after a preview of ${activationSubject.scenarioCount} scenarios was shown. The preview hash and the ledger head at that moment are inside the signature.`
+                      : "Granted without a preview. Nothing proves what was shown before this authority was created."}
+                  </p>
+
+                  <dl className="mt-2 space-y-1">
+                    {activationSubject?.previewDigest ? (
+                      <div className="flex gap-2">
+                        <dt className="text-[10px] uppercase tracking-wide text-neutral-600">
+                          preview
+                        </dt>
+                        <dd className="truncate font-mono text-[10px] text-neutral-500">
+                          {activationSubject.previewDigest}
+                        </dd>
+                      </div>
+                    ) : null}
+                    <div className="flex gap-2">
+                      <dt className="text-[10px] uppercase tracking-wide text-neutral-600">
+                        anchor
+                      </dt>
+                      <dd className="truncate font-mono text-[10px] text-neutral-500">
+                        {activation.ledgerHead}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              ) : (
+                <p className="mt-4 text-xs text-neutral-600">
+                  No activation record — this version was activated before records
+                  existed.
+                </p>
+              )}
             </div>
 
             <div>

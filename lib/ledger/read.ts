@@ -128,6 +128,25 @@ export async function verifiedChain(): Promise<VerifiedEntry[]> {
   return out;
 }
 
+/**
+ * THE LEDGER HEAD — the digest every claim anchors to.
+ *
+ * Read from the last entry in canonical chain order, never computed from a
+ * count or a timestamp. An empty ledger has a head: the genesis value. That is
+ * a real anchor, not a missing one, and a claim made against an empty ledger is
+ * still a claim about a specific state of the record.
+ *
+ * An unattested final entry yields genesis too — it contributes no digest to
+ * anchor to, and inventing one would be worse than admitting it.
+ */
+export async function ledgerHead(): Promise<string> {
+  const last = await db.ledgerEntry.findFirst({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { receiptDigest: true },
+  });
+  return last?.receiptDigest ?? GENESIS_PREV_DIGEST;
+}
+
 /** Verification status for one entry, in the context of the whole chain. */
 export async function verifyEntry(id: string): Promise<ReceiptStatus | null> {
   const chain = await verifiedChain();

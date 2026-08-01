@@ -417,6 +417,62 @@ model LedgerEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Proof plane — claims the system makes ABOUT its own record
+// ---------------------------------------------------------------------------
+
+/// The claim types. One table, not three, because they are one object: a
+/// signed, canonical, offline-verifiable statement anchored to a ledger head.
+/// Adding a type must never mean adding a table, a signer, or a verifier.
+enum ClaimType {
+  /// A human saw what a policy would do, then granted it. (M1)
+  ACTIVATION
+  /// The books balance against the payment network's own record. (M2)
+  RECONCILIATION
+  /// N attacks ran, none executed outside authority. (M3)
+  ADVERSARIAL
+}
+
+/// A signed claim about the record, as opposed to a record of an action.
+///
+/// A ledger entry says "this happened". A claim says something ABOUT a set of
+/// entries — that a preview preceded them, that nothing is missing from them,
+/// that an adversary could not add to them. Both are signed the same way by the
+/// same key, and the same offline verifier reads both.
+///
+/// ANCHORING is what makes claims compose: every claim names the ledger head it
+/// was made against, and that head is inside the signature. Tamper with any
+/// entry and both the chain and every downstream claim break together.
+model Claim {
+  id   String    @id @default(uuid())
+  type ClaimType
+
+  createdAt DateTime @default(now())
+  /// Demo clock at the moment the claim was made.
+  clockAt   DateTime
+
+  /// Digest of the last ledger entry when this claim was made, or all zeroes
+  /// for a claim made against an empty ledger.
+  ledgerHead String
+
+  /// The claim's body. Json because it is a record, not queryable state.
+  subject Json
+
+  /// Set on ACTIVATION claims. Not a relation: a claim must survive as an
+  /// artifact even if what it refers to is later removed.
+  policyVersionId String?
+
+  /// Receipt — identical shape and identical meaning to LedgerEntry's.
+  receiptDigest       String?
+  receiptPrevDigest   String?
+  receiptSignature    String?
+  receiptKeyId        String?
+  receiptCanonVersion String?
+
+  @@index([type, createdAt])
+  @@index([policyVersionId])
+}
+
+// ---------------------------------------------------------------------------
 // System state — one row, id "singleton"
 // ---------------------------------------------------------------------------
 

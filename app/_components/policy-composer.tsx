@@ -338,7 +338,9 @@ export function PolicyComposer({ initialText }: { initialText: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           policyVersionId: compiled.policyVersionId,
-          /** The digest of the preview THIS person saw, carried to the server. */
+          // The digest of the preview THIS person saw. The server rebuilds the
+          // preview and refuses the activation if the two disagree, so the
+          // record cannot claim a preview nobody was shown.
           previewDigest: compiled.previewDigest,
         }),
       });
