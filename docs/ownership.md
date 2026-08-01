@@ -63,12 +63,21 @@ create a file outside your directories.
 | `lib/attest/claims.ts` | **WS-A** | The claim envelope. Shared by all three V2 claim types |
 | `app/api/policy/diff/` | **WS-C** | Behavioral diff, on demand |
 | `scripts/replay-history.ts` | **WS-A** | History replay CLI |
+| `lib/reconcile/` | **WS-B** | Two-sided reconciliation. Core is pure; `run.ts` does the reads through `lib/prava`'s index |
+| `app/api/reconcile/` | **WS-B** | Run a reconciliation, read the latest attestation |
 
 **Schema change announced (V2/M1):** one new enum `ClaimType` and one new model
 `Claim`. This is a new table, not an additive column, and it is deliberate — the
 three V2 claim types (activation, reconciliation, adversarial) are one object,
 so adding a type must never mean adding a table, a signer, or a verifier. No
 existing model was altered.
+
+**Schema change announced (V2/M2):** one new model `MockCharge` — the mock
+payment provider's own book, written only by the mock adapter. It exists so
+reconciliation has a genuinely independent second book when no provider is
+connected. `resetDatabase` clears it and `Claim` first: a surviving mock charge
+would appear in the next reconciliation as the system accusing itself of moving
+money without a record, because somebody pressed reseed.
 
 ---
 

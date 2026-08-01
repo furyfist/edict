@@ -142,9 +142,22 @@ export async function runReconciliation(): Promise<ReconciliationRun> {
   let chargesChecked = 0;
   let matched = 0;
 
-  for (const mandate of mandates) {
+  // Fetched in parallel, reconciled in order.
+  //
+  // Sequentially this was eight round trips deep — about fourteen seconds
+  // against a database on another continent, which is far too slow to run in
+  // front of anyone. These are reads with no ordering between them.
+  //
+  // The COMPARISON stays ordered and deterministic: results are consumed in
+  // mandate order below, so two runs over the same books produce byte-identical
+  // discrepancy lists and therefore identical attestation digests.
+  const histories = await Promise.all(
+    mandates.map((mandate) => adapter.listCharges(mandate.pravaMandateId)),
+  );
+
+  for (const [index, mandate] of mandates.entries()) {
     const entries = byMandate.get(mandate.pravaMandateId) ?? [];
-    const history = await adapter.listCharges(mandate.pravaMandateId);
+    const history = histories[index];
 
     if (!history.ok) {
       unreadable.push({

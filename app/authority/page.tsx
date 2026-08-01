@@ -36,18 +36,25 @@ export default async function AuthorityPage() {
   let attestation: Awaited<ReturnType<typeof latestAttestation>> = null;
 
   try {
-    clock = await getClock();
-    // Read, never run. Reconciliation is a deliberate act with a signed record
-    // attached; a page load must not manufacture one every time somebody
-    // glances at this screen.
-    attestation = await latestAttestation();
-    const state = await db.systemState.findUnique({ where: { id: "singleton" } });
+    // One wave, not five. Every read here is independent, and stacking them
+    // sequentially cost a second per page load against a remote database —
+    // the same trap the Vendors page and the policy preview already fell into.
+    //
+    // `latestAttestation` READS, never runs. Reconciliation is a deliberate act
+    // with a signed record attached; a page load must not manufacture one every
+    // time somebody glances at this screen.
+    const [clockValue, storedAttestation, state, rows, vendors] = await Promise.all([
+      getClock(),
+      latestAttestation(),
+      db.systemState.findUnique({ where: { id: "singleton" } }),
+      db.mandate.findMany({ orderBy: { createdAt: "asc" } }),
+      db.vendor.findMany({ select: { id: true, name: true } }),
+    ]);
+
+    clock = clockValue;
+    attestation = storedAttestation;
     engaged = state?.killSwitchEngaged ?? false;
 
-    const rows = await db.mandate.findMany({ orderBy: { createdAt: "asc" } });
-    const vendors = await db.vendor.findMany({
-      select: { id: true, name: true },
-    });
     const nameOf = new Map(vendors.map((v) => [v.id, v.name]));
 
     mandates = rows.map((row) => ({

@@ -25,6 +25,11 @@ out loud during the demo, not buried in a repository nobody opens.
   convention. `grep` can only prove there is no direct edge; the graph proves
   there is no path.
 - **The append-only ledger.** No update path, no delete path, anywhere.
+- **Two-sided reconciliation.** Every executed entry is matched against the
+  payment provider's own charge history, and every charge in that history is
+  matched back against an entry. The second direction is the one that catches
+  money moving with no record. Discrepancies are named with identifiers, and the
+  result is signed and anchored to a ledger head.
 - **The receipts.** Every entry is Ed25519-signed over a canonical projection
   and hash-linked to its predecessor. Exportable, and verifiable offline by
   anyone with `scripts/verify-receipts.mjs` and no access to us — no database,
@@ -49,6 +54,37 @@ out loud during the demo, not buried in a repository nobody opens.
   model."* Say this out loud during the beat rather than letting someone find
   it.
 - **The company itself.** There is no customer behind this data.
+
+## The second book, stated precisely
+
+This is the newest claim in the system and the easiest one to overstate, so the
+boundary is drawn here rather than in Q&A.
+
+**On the Prava sandbox, two-sided reconciliation cannot run.** The sandbox
+exposes no charge-history endpoint — five plausible paths were probed against a
+live key and all are router-level 404s, while `GET /v1/mandates/{id}` returns an
+application 404, proving the probe reached a real API. The evidence is recorded
+in `docs/spikes/prava-charge-history.md`.
+
+**What the system does about that is the point.** It reports **cannot be
+verified**, names every mandate it could not read and why, and signs that
+admission. It never reports balanced books it did not check. An unreadable book
+is not an empty one.
+
+**So the reconciliation beat runs against the mock provider**, whose book is
+persisted separately and written only by the payment adapter at the moment of a
+charge — never by `lib/ledger`, and never derived from it. Backfilling the
+second book from our own ledger would make every reconciliation pass and prove
+nothing; it is the obvious shortcut and it is not taken.
+
+**Direction one does not need enumeration** and would work against real rails
+today. Direction two — the one that matters — needs the endpoint.
+
+**The omission control on the attack console is not a feature.** It charges
+under the ceiling, where the network has no objection, and deliberately skips
+the ledger write. It simulates an operator with admin access stealing from
+their own system, exactly as the tamper control simulates one with database
+credentials. It is labelled as such on screen.
 
 ## What is simulated rather than integrated
 

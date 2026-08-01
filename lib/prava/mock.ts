@@ -152,7 +152,14 @@ export function createMockAdapter(options: MockOptions): PaymentBoundary {
     },
 
     async listCharges(mandateId): Promise<ChargeHistoryResult> {
-      const mandate = await store.get(mandateId);
+      // Both reads at once. The existence check and the history are independent
+      // questions, and asking them in sequence doubled the depth of every
+      // reconciliation.
+      const [mandate, charges] = await Promise.all([
+        store.get(mandateId),
+        store.charges(mandateId),
+      ]);
+
       if (!mandate) {
         return {
           ok: false,
@@ -160,7 +167,7 @@ export function createMockAdapter(options: MockOptions): PaymentBoundary {
           message: `No mandate ${mandateId}.`,
         };
       }
-      return { ok: true, charges: await store.charges(mandateId) };
+      return { ok: true, charges };
     },
   };
 }

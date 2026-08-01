@@ -13,8 +13,10 @@ Everything needed to drive the demo, and to recover when something goes wrong.
 | Database reachable | `npm run db:push` |
 | Connection pool | `DATABASE_URL` ends `connection_limit=20`. Worth ~0.2s since the Vendors page reads were grouped; keep it, but it is not load-bearing |
 | Clean state | `npm run seed` |
-| Tests green | `npm run test` — expect 209 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
+| Tests green | `npm run test` — expect 238 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
 | **History replays** | `npm run replay` — expect `IDENTICAL`. If it diverges, the engine no longer reproduces a decision it already made, and beat 1's Q&A answer is gone. **~4s** |
+| **Books balance** | `/authority` → **Reconcile now** → expect **books balance**. If it comes back *cannot be verified*, see the row below. If it comes back *discrepant* before you have attacked anything, **stop and investigate** — that is a real finding |
+| **Which book you are reconciling against** | The Authority panel says *checked against Prava* or *the mock provider*. **With `PRAVA_SECRET_KEY` set against the sandbox, every mandate reads `unsupported` and the result is `cannot be verified`** — the sandbox exposes no charge-history endpoint (`docs/spikes/prava-charge-history.md`). Run beat 6 with the mock, and disclose it |
 | **Signing key is set** | `curl <url>/api/receipts/key` → `configured: true`. **If this is false every entry reads *unattested* and beat 7 evaporates.** Set `RECEIPT_SIGNING_KEY`, redeploy, re-run the tick |
 | Verifier runs on the presentation machine | `npm run verify <bundle>` against an exported file, with wifi off |
 | Build clean | `npm run build` |
@@ -53,6 +55,8 @@ nothing; one that overruns the number you rehearsed to costs you the room.
 | **Policy activation** | **8.7s** | Live. The server rebuilds the entire preview to check it matches the one you were shown before it will sign anything. That pause is a sentence, not an apology |
 | **Behavioral diff** (`/policy`) | **4.0–4.4s** | Q&A only, on click. Never on the critical path |
 | **History replay** (`npm run replay`, 8 entries) | **4.1–4.6s** | Q&A. Includes process start and connection |
+| **Omission bypass** (charge under cap, no record) | **~5.1s** | Live. Narrate the one sentence while it runs |
+| **Reconciliation** (8 mandates, both directions) | **4.6–5.7s** | Live. The whole of beat 6 is ~10s of machine time inside a 45s beat |
 | Engine bypass (either mode) | ~3s | Fine live. This is the climax and it is fast |
 | Receipt export | ~2s | Fine live |
 | Offline verification (8 entries) | **<1s** | Fine live. Local crypto, no round trips |
@@ -60,7 +64,8 @@ nothing; one that overruns the number you rehearsed to costs you the room.
 | Page load — ledger, refusals | ~1.4s | Fine live |
 | Page load — policy | ~2.0s | Fine live. Up from ~1.4s: the page now also reads the activation record |
 | Page load — approvals | ~3.0s | Fine live |
-| Page load — authority, attack, vendors | ~3.9s | Fine live |
+| Page load — authority | **~1.4s** | Fine live. Down from ~3.9s — its five reads now go out in one wave, and it carries the completeness panel for free |
+| Page load — attack, vendors | ~3.9s | Fine live |
 
 Every page is now comfortably clickable. `/vendors` used to be the exception at
 **~10.2s**; it reads in one grouped wave of seven queries rather than five per
@@ -234,6 +239,52 @@ was written and that we wrote it. It does not prove the record was true when
 written — the cross-check for that is the Prava dashboard, which beat 3 already
 does. Volunteer the limit.
 
+**6b. "So steal from yourself."** `/attack`, section 5. This is the sharpest
+beat in V2 and it takes about ten seconds of machine time.
+
+Everything so far attacks the ceiling and loses. Say the difference out loud
+before you click:
+
+> *"Every attack you have seen goes over the ceiling and gets stopped. Watch what
+> happens if I don't go over it. I am going to charge ninety-five dollars —
+> which my own mandate is perfectly happy to authorise — using my own admin
+> access, and simply not write the ledger entry."*
+
+Click **Charge under cap, suppress the record** (**~5s**). It succeeds. Then:
+
+> *"That worked. Money moved. And look —"* (open `/`) *"— the ledger is intact.
+> Every signature still verifies, the hash chain is unbroken, nothing was
+> altered. Append-only proved exactly what it promises and it did not help at
+> all, because nothing was altered. Something was omitted."*
+
+Now `/authority` → **Reconcile now** (**~5s**). It comes back **books do not
+balance**, naming the charge by its Prava id.
+
+> *"Prava's books and my books disagree. My books are wrong — and they say so,
+> with the charge id, which you can look up in Prava's own dashboard."*
+
+The one-sentence takeaway, and it is the milestone: **an append-only ledger
+proves nothing was altered; only two-sided reconciliation proves nothing was
+hidden.**
+
+**Restore before moving on.** The orphan persists until the books are cleaned
+up. Either leave it (it is honest, and the Authority page shows the discrepancy
+for the rest of the demo) or reseed. Decide which before you walk in.
+
+**Disclose which book you are checking against.** With the Prava sandbox
+configured this beat cannot run — the sandbox exposes no charge-history
+endpoint, so reconciliation correctly reports *cannot be verified* rather than
+inventing an answer. Run it on the mock, and say so:
+
+> *"Direction one runs against the real network. Direction two — proving nothing
+> moved that we did not record — needs an enumeration endpoint this sandbox does
+> not expose, so this is our fallback provider. The reconciler tells you that
+> itself: it will not claim the books balance when it could not read one of
+> them."*
+
+That admission is stronger than the alternative, and the alternative is a system
+that reports "balanced" when it has read nothing.
+
 **7. Kill switch.** `/authority`. Type `HALT`. Every mandate pauses, and the
 halted banner appears on every page.
 
@@ -291,6 +342,33 @@ is what would close it. Say this before it is asked.
 A signature cannot help you there, and we do not claim it does. That is what the
 Prava mandate and charge identifiers are for — cross-check them in Prava's own
 dashboard.
+
+**"What if you just didn't write a record at all?"**
+The best question anyone can ask about an append-only ledger, and the answer is
+beat 6b: we do exactly that on stage, and reconciliation catches it. Every
+executed entry is matched against the payment network's own charge history in
+both directions — ours to theirs, and theirs to ours. The second direction is
+the one that catches money moving with no record, and it is the only reason this
+ledger can claim to be complete rather than merely unaltered.
+
+**"How often does reconciliation run?"**
+On demand, and every run is signed and anchored to the ledger head it was made
+against. There is no background job, which means an attestation can be stale —
+so the Authority page renders *stale* the moment the ledger moves past the head
+the attestation was made at. It is never silently presented as current.
+
+**"What if the charge-history endpoint is down?"**
+Then the run reports **cannot be verified**, names the mandates it could not
+read, and signs that. It does not report balanced books. That distinction is the
+single most important line in `lib/reconcile/run.ts` — treating an unreadable
+book as an empty one would turn an outage into a proof of completeness.
+
+**"Couldn't you just backfill the second book from your own ledger?"**
+We could, and it would make every reconciliation pass forever while proving
+nothing — the second book would be derived from the first. The mock provider's
+book is written only by the payment adapter at the moment of a charge, never by
+`lib/ledger` and never from it. That is why the omission beat works: the adapter
+recorded the theft without the ledger's involvement or permission.
 
 **"Doesn't pausing a mandate just decline the charge, not cancel the contract?"**
 Correct — and that is why the agent drafts the cancellation email. Volunteer

@@ -75,10 +75,18 @@ export async function POST(request: Request) {
         : "over_cap";
   const clock = await getClock();
 
-  const mandate = await db.mandate.findUnique({
-    where: { vendorId: body.vendorId },
-  });
-  const vendor = await db.vendor.findUnique({ where: { id: body.vendorId } });
+  // One wave. Three independent lookups that used to be three round trips, on a
+  // path where the whole point is that it finishes in a couple of seconds while
+  // somebody is watching.
+  const [mandate, vendor, renewal] = await Promise.all([
+    db.mandate.findUnique({ where: { vendorId: body.vendorId } }),
+    db.vendor.findUnique({ where: { id: body.vendorId } }),
+    db.renewal.findFirst({
+      where: { vendorId: body.vendorId },
+      orderBy: { cycleStart: "desc" },
+    }),
+  ]);
+
   if (!mandate || !vendor) {
     return NextResponse.json(
       { error: "vendor has no mandate" },
@@ -86,20 +94,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const renewal = await db.renewal.findFirst({
-    where: { vendorId: body.vendorId },
-    orderBy: { cycleStart: "desc" },
-  });
   if (!renewal) {
     return NextResponse.json({ error: "no renewal" }, { status: 404 });
-  }
-
-  const evidence = await buildEvidenceBundle({
-    renewalId: renewal.id,
-    clock,
-  });
-  if (!evidence) {
-    return NextResponse.json({ error: "no evidence" }, { status: 404 });
   }
 
   const amountCents =
@@ -156,6 +152,17 @@ export async function POST(request: Request) {
         "The chain is intact, every signature still verifies, and the record is " +
         "wrong. Run reconciliation on the Authority page.",
     });
+  }
+
+  // Built only for the modes that write an entry. The omission mode returns
+  // above without one, and assembling five queries' worth of evidence for a
+  // record we are deliberately not writing added seconds to a live beat.
+  const evidence = await buildEvidenceBundle({
+    renewalId: renewal.id,
+    clock,
+  });
+  if (!evidence) {
+    return NextResponse.json({ error: "no evidence" }, { status: 404 });
   }
 
   if (mode === "paused") {
