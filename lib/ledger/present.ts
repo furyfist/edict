@@ -76,10 +76,20 @@ export async function listPresentedEntries(options: {
   outcome?: Outcome;
   vendorId?: string;
   limit?: number;
+  /**
+   * Defaults to operational.
+   *
+   * The home page is the five-second impression and it should show the agent's
+   * work, not last night's attacks against it. The chain above is still walked
+   * whole — only the display is filtered.
+   */
+  context?: "OPERATIONAL" | "ADVERSARIAL" | "ALL";
 } = {}): Promise<PresentedEntry[]> {
   const chain = await verifiedChain();
+  const context = options.context ?? "OPERATIONAL";
 
-  const matching = chain.filter(({ entry }) => {
+  const matching = chain.filter(({ entry, runContext }) => {
+    if (context !== "ALL" && runContext !== context) return false;
     if (options.outcome && entry.outcome !== options.outcome) return false;
     if (options.vendorId && entry.vendorId !== options.vendorId) return false;
     return true;

@@ -317,6 +317,30 @@ enum TickStatus {
   HALTED
 }
 
+/// Why a tick ran. Operational work, or the gauntlet under attack.
+///
+/// ---------------------------------------------------------------------------
+/// ONE CHAIN, TWO VIEWS — and why this lives on Tick and not on LedgerEntry.
+///
+/// A separate adversarial ledger was rejected: it would be a demo-only path,
+/// and it would exempt every attack from the tamper-evidence guarantee that
+/// makes the record worth anything. Same writer, same chain, same schema.
+///
+/// But the tag itself must NOT be on LedgerEntry, because a ledger entry's
+/// contract projection is what gets signed. Adding a field there would change
+/// every signed payload and invalidate every receipt ever issued — the ledger
+/// would read CHAIN COMPROMISED on stage for a schema change nobody attacked.
+///
+/// It belongs here anyway. The context is a property of the RUN, not of the
+/// decision: the engine adjudicated identically either way, which is precisely
+/// the claim the gauntlet exists to make. Views filter by joining; the chain
+/// does not filter at all, so an attacker cannot hide an edit between the two.
+/// ---------------------------------------------------------------------------
+enum RunContext {
+  OPERATIONAL
+  ADVERSARIAL
+}
+
 model Tick {
   id String @id @default(uuid())
 
@@ -334,9 +358,18 @@ model Tick {
   status     TickStatus  @default(RUNNING)
   haltReason HaltReason?
 
+  /// Operational by default. The gauntlet sets ADVERSARIAL; entries inherit it
+  /// through this relation rather than carrying a copy.
+  runContext RunContext @default(OPERATIONAL)
+
+  /// Set on gauntlet ticks: which frozen corpus entry was being delivered.
+  /// Null on operational ticks.
+  attackId String?
+
   entries LedgerEntry[]
 
   @@index([startedAt])
+  @@index([runContext, startedAt])
 }
 
 /// APPEND-ONLY. lib/ledger exposes no update and no delete path. A correction is

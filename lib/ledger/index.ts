@@ -17,8 +17,9 @@ export {
   verifiedChain,
   verifyEntry,
   ledgerHead,
+  listAdversarialEntries,
 } from "./read";
-export type { VerifiedEntry } from "./read";
+export type { VerifiedEntry, ContextFilter } from "./read";
 
 export { toSignedRecord, CHAIN_ORDER } from "./record";
 export type { SignedRecord } from "./record";
