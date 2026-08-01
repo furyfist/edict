@@ -1,245 +1,188 @@
-import {
-  CONDITION_FIELDS,
-  CONDITION_OPERATORS,
-  RULE_EFFECTS,
-  type ConditionField,
-  type ConditionOperator,
-  type PolicyRule,
-  type RuleCondition,
-  type RuleEffect,
-} from "../../contracts";
-import type { CompileResult, CompilerRejection } from "./index";
+import { EFFECTS, FREQUENCIES } from "../../contracts";
+import type { Cents, Effect, Frequency, PolicyRule, RuleScope } from "../../contracts";
+import { hasUnboundedAuthority, terminalRule } from "../../contracts/policy";
+import type { CompileError, CompileResult, RawCompiledRule } from "./index";
 
 /**
- * Compiler validations.
+ * Deterministic validation of compiled rules.
  *
- * The compiler's worst failure is silent partial compilation: dropping a
- * clause it did not understand and returning a policy that looks complete.
- * The user then believes a rule is enforced when nothing enforces it, and they
- * find out when a charge goes through that shouldn't have.
+ * The model proposes; this decides. Nothing here calls a model, so the question
+ * "is this policy admissible?" always has the same answer for the same input.
  *
- * Every check here converts that silence into a rejection that names the
- * clause. A policy either compiles completely or it does not compile.
+ * The most important check is `containsFragment`. Every rule must quote the
+ * user's text verbatim, which means the compiler cannot conjure authority the
+ * user never expressed — it can only point at words they actually wrote.
  */
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+/** Whitespace-and-case tolerant containment. Not a paraphrase check. */
+export function containsFragment(text: string, fragment: string): boolean {
+  const normalize = (value: string) =>
+    value.toLowerCase().replace(/[\s ]+/g, " ").trim();
+
+  const haystack = normalize(text);
+  const needle = normalize(fragment);
+  if (needle.length === 0) return false;
+  return haystack.includes(needle);
 }
 
-function validateCondition(raw: unknown): RuleCondition | null {
-  if (!isRecord(raw)) return null;
-
-  const field = raw.field;
-  const operator = raw.operator;
-
-  if (
-    typeof field !== "string" ||
-    !(CONDITION_FIELDS as readonly string[]).includes(field)
-  ) {
-    return null;
-  }
-  if (
-    typeof operator !== "string" ||
-    !(CONDITION_OPERATORS as readonly string[]).includes(operator)
-  ) {
-    return null;
-  }
-
-  const value = raw.value;
-  const acceptable =
-    value === undefined ||
-    typeof value === "string" ||
-    (typeof value === "number" && Number.isFinite(value)) ||
-    (Array.isArray(value) && value.every((v) => typeof v === "string"));
-
-  if (!acceptable) return null;
-
-  return {
-    field: field as ConditionField,
-    operator: operator as ConditionOperator,
-    ...(value === undefined ? {} : { value: value as RuleCondition["value"] }),
-  };
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
-export function validateCompilation(
-  parsed: unknown,
-  sourceText: string,
-): CompileResult {
-  const rejections: CompilerRejection[] = [];
-  const rules: PolicyRule[] = [];
+export function validateCompiledRules(input: {
+  englishText: string;
+  rawRules: RawCompiledRule[];
+  unsupportedClauses: string[];
+  vendors: Array<{ id: string; name: string; category: string }>;
+}): CompileResult {
+  const errors: CompileError[] = [];
+  const understood: PolicyRule[] = [];
+  const vendorIds = new Set(input.vendors.map((vendor) => vendor.id));
+  const categories = new Set(input.vendors.map((vendor) => vendor.category));
 
-  if (!isRecord(parsed)) {
-    return {
-      ok: false,
-      sourceText,
-      understood: [],
-      rejections: [
-        { clause: sourceText, reason: "The compiler output was not an object." },
-      ],
-    };
-  }
-
-  // Clauses the compiler itself reported as unsupported. Surfaced verbatim —
-  // this is the honest half of the rejection surface.
-  const unsupported = Array.isArray(parsed.unsupported)
-    ? parsed.unsupported
-    : [];
-  for (const entry of unsupported) {
-    if (!isRecord(entry)) continue;
-    rejections.push({
-      clause: typeof entry.clause === "string" ? entry.clause : "",
-      reason:
-        typeof entry.reason === "string"
-          ? entry.reason
-          : "This clause could not be expressed as a rule.",
+  if (input.rawRules.length === 0) {
+    errors.push({
+      message: "No rules could be derived from this policy text.",
     });
   }
 
-  const rawRules = Array.isArray(parsed.rules) ? parsed.rules : [];
+  input.rawRules.forEach((raw, index) => {
+    const clause = raw.sourceFragment;
+    const reject = (message: string) => errors.push({ clause, message });
 
-  if (rawRules.length === 0 && rejections.length === 0) {
-    return {
-      ok: false,
-      sourceText,
-      understood: [],
-      rejections: [
-        {
-          clause: sourceText,
-          reason:
-            "No rules were produced from this text. Nothing would be enforced.",
-        },
-      ],
-    };
-  }
-
-  for (const raw of rawRules) {
-    if (!isRecord(raw)) {
-      rejections.push({
-        clause: "",
-        reason: "The compiler produced a rule that was not an object.",
-      });
-      continue;
+    if (!(EFFECTS as readonly string[]).includes(raw.effect)) {
+      reject(`Unknown effect "${raw.effect}".`);
+      return;
     }
 
-    const fragment =
-      typeof raw.sourceFragment === "string" ? raw.sourceFragment : "";
-    const describeClause = fragment || "(unattributed rule)";
-
-    const effect = raw.effect;
-    if (
-      typeof effect !== "string" ||
-      !(RULE_EFFECTS as readonly string[]).includes(effect)
-    ) {
-      rejections.push({
-        clause: describeClause,
-        reason: `The compiler produced an unrecognized effect.`,
-      });
-      continue;
+    // Provenance. A rule with no textual origin is not admissible.
+    if (typeof clause !== "string" || clause.trim().length === 0) {
+      reject("Rule does not quote any of your text.");
+      return;
+    }
+    if (!containsFragment(input.englishText, clause)) {
+      reject(
+        `Rule quotes "${clause}", which does not appear in your policy text.`,
+      );
+      return;
     }
 
-    // Every rule must be traceable to text the user actually wrote. A rule
-    // whose fragment is not in the input is a rule the compiler invented, and
-    // an invented rule is indistinguishable from a hallucinated one.
-    if (fragment.length === 0) {
-      rejections.push({
-        clause: describeClause,
-        reason: "This rule carried no source fragment and cannot be traced.",
-      });
-      continue;
-    }
-    if (!sourceText.includes(fragment)) {
-      rejections.push({
-        clause: fragment,
-        reason:
-          "This rule cites text that does not appear in the policy you wrote.",
-      });
-      continue;
-    }
-
-    const conditionsRaw = Array.isArray(raw.conditions) ? raw.conditions : [];
-    const conditions: RuleCondition[] = [];
-    let conditionFailed = false;
-    for (const c of conditionsRaw) {
-      const condition = validateCondition(c);
-      if (!condition) {
-        rejections.push({
-          clause: fragment,
-          reason:
-            "This rule contains a condition the policy engine cannot evaluate.",
-        });
-        conditionFailed = true;
+    let scope: RuleScope;
+    switch (raw.scopeKind) {
+      case "VENDOR": {
+        const vendorId = raw.scopeVendorId ?? "";
+        if (!vendorIds.has(vendorId)) {
+          reject(`References unknown vendor "${vendorId}".`);
+          return;
+        }
+        scope = { kind: "VENDOR", vendorId };
         break;
       }
-      conditions.push(condition);
-    }
-    if (conditionFailed) continue;
-
-    const ceiling = raw.amountCeilingCents;
-    const ceilingValid =
-      ceiling === null ||
-      (typeof ceiling === "number" &&
-        Number.isInteger(ceiling) &&
-        ceiling >= 0);
-
-    if (!ceilingValid) {
-      rejections.push({
-        clause: fragment,
-        reason: "The amount ceiling was not an integer number of cents.",
-      });
-      continue;
-    }
-
-    // The unbounded-authority rejection. This is the one validation in the
-    // entire system that makes a category of policy structurally impossible to
-    // express, rather than merely unlikely to be reached. See enforceBounded.
-    if (effect === "ALLOW_AUTO" && ceiling === null) {
-      rejections.push({
-        clause: fragment,
-        reason:
-          "This would permit unattended spending with no upper limit. Add an " +
-          "amount ceiling — for example, “up to $500” — and compile again.",
-      });
-      continue;
+      case "CATEGORY": {
+        const category = raw.scopeCategory ?? "";
+        if (category.trim().length === 0) {
+          reject("Category scope is empty.");
+          return;
+        }
+        if (!categories.has(category)) {
+          reject(`References unknown category "${category}".`);
+          return;
+        }
+        scope = { kind: "CATEGORY", category };
+        break;
+      }
+      case "ANY":
+        scope = { kind: "ANY" };
+        break;
+      default:
+        reject(`Unknown scope "${raw.scopeKind}".`);
+        return;
     }
 
-    const ordinal =
-      typeof raw.ordinal === "number" && Number.isInteger(raw.ordinal)
-        ? raw.ordinal
-        : rules.length + 1;
+    const conditions: PolicyRule["conditions"] = {};
 
-    rules.push({
-      id: `rule_${ordinal}`,
-      ordinal,
-      effect: effect as RuleEffect,
+    if (raw.maxAmountCents !== null && raw.maxAmountCents !== undefined) {
+      if (!isPositiveInteger(raw.maxAmountCents)) {
+        reject("Maximum amount must be a positive whole number of cents.");
+        return;
+      }
+      conditions.maxAmountCents = raw.maxAmountCents as Cents;
+    }
+
+    if (raw.minActiveSeatPct !== null && raw.minActiveSeatPct !== undefined) {
+      const pct = raw.minActiveSeatPct;
+      if (!Number.isInteger(pct) || pct < 0 || pct > 100) {
+        reject("Usage percentage must be a whole number between 0 and 100.");
+        return;
+      }
+      conditions.minActiveSeatPct = pct;
+    }
+
+    if (raw.frequency !== null && raw.frequency !== undefined) {
+      if (!(FREQUENCIES as readonly string[]).includes(raw.frequency)) {
+        reject(`Unknown billing frequency "${raw.frequency}".`);
+        return;
+      }
+      conditions.frequency = raw.frequency as Frequency;
+    }
+
+    if (raw.renewalWithinDays !== null && raw.renewalWithinDays !== undefined) {
+      if (!isPositiveInteger(raw.renewalWithinDays)) {
+        reject("Renewal window must be a positive whole number of days.");
+        return;
+      }
+      conditions.renewalWithinDays = raw.renewalWithinDays;
+    }
+
+    const rule: PolicyRule = {
+      id: `rule-${index}`,
+      ordinal: index,
+      effect: raw.effect as Effect,
+      scope,
       conditions,
-      amountCeiling: ceiling as number | null,
-      currency: "USD",
-      sourceFragment: fragment,
-      description:
-        typeof raw.description === "string" && raw.description.trim()
-          ? raw.description
-          : fragment,
+      sourceFragment: clause.trim(),
+    };
+
+    // Unbounded autonomy is not discouraged — it is uncompilable.
+    //
+    // Enforced here, where authority is CREATED, rather than downstream where
+    // it would be spent. An ALLOW_AUTO rule with no ceiling would let the agent
+    // approve any amount for anything matching its scope, and no amount of
+    // care further down the pipeline can undo having granted that.
+    if (hasUnboundedAuthority(rule)) {
+      reject(
+        "This would let the agent approve any amount automatically. Give it a limit, for example \"under $500 a month\".",
+      );
+      return;
+    }
+
+    understood.push(rule);
+  });
+
+  // Unsupported clauses are surfaced, never silently dropped. A policy that
+  // half-compiled without saying so is worse than one that refused outright.
+  for (const clause of input.unsupportedClauses) {
+    errors.push({
+      clause,
+      message: "This cannot be expressed as a rule. Rewrite it or remove it.",
     });
   }
 
-  if (rejections.length > 0) {
-    // Partial compilation is never returned as a success. The user sees what
-    // was understood and what was not, and decides.
-    return { ok: false, sourceText, understood: rules, rejections };
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      errors,
+      understood,
+      unsupportedClauses: input.unsupportedClauses,
+    };
   }
 
-  return { ok: true, sourceText, rules: sortRules(rules) };
-}
-
-/** Deterministic order: ordinal, then id. Row order never decides anything. */
-export function sortRules(rules: PolicyRule[]): PolicyRule[] {
-  return [...rules].sort((a, b) =>
-    a.ordinal !== b.ordinal
-      ? a.ordinal - b.ordinal
-      : a.id < b.id
-        ? -1
-        : a.id > b.id
-          ? 1
-          : 0,
-  );
+  return {
+    ok: true,
+    draft: {
+      englishText: input.englishText,
+      rules: [...understood, terminalRule(understood.length)],
+      unsupportedClauses: [],
+    },
+  };
 }

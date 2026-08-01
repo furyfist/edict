@@ -1,81 +1,37 @@
-import type { Cents, Money } from "./common";
-import type { EvidenceGap } from "./evidence";
-import type { RuleEffect } from "./policy";
+import type { Effect, VerdictCode } from "./enums";
 
 /**
- * Contract 4 — the verdict.
+ * CONTRACT 4 — Verdict
  *
- * The output of the pure engine. Exactly one rule id is always cited, including
- * when the terminal default applies — an unexplained decision is not a decision
- * this system is willing to make.
+ * The policy engine's output, and the only thing in this system permitted to
+ * say yes.
  *
- * A verdict is a decision, not an instruction. Turning it into an instruction
- * is the outcome router's job, which keeps branching out of the engine.
+ * A verdict always cites exactly one rule. That is what makes every action in
+ * the ledger traceable to a single sentence the user wrote, and it is why the
+ * engine resolves ties by lowest ordinal rather than returning a set.
+ *
+ * The engine that produces this is a pure function: no I/O, no clock, no
+ * randomness, no model. Same inputs, same verdict, forever.
  */
 
-export type VerdictDecision = RuleEffect;
-
-/** Why the engine landed where it did. Rendered by the explainer, not by an LLM. */
-export const VERDICT_REASONS = [
-  "RULE_MATCHED",
-  "TERMINAL_DEFAULT",
-  "DENIAL_PASS",
-  "AMOUNT_EXCEEDS_CEILING",
-  "MISSING_EVIDENCE",
-  "MALFORMED_PROPOSAL",
-  "UNKNOWN_ACTION",
-] as const;
-export type VerdictReason = (typeof VERDICT_REASONS)[number];
-
 export interface Verdict {
-  /** The bundle and proposal this verdict adjudicates. */
-  bundleId: string;
-  proposalId: string | null;
-  renewalId: string;
-
-  decision: VerdictDecision;
-  reason: VerdictReason;
-
-  /** Always populated. Exactly one rule is cited for every verdict. */
-  citedRuleId: string;
-  /** The English fragment behind the cited rule, empty for the default. */
-  citedSourceFragment: string;
-  /** Restatement of the cited rule, for rendering. */
-  citedRuleDescription: string;
-
-  /** The policy version the decision was made under. Pinned per tick. */
-  policyVersionId: string;
-
-  /** Amount the verdict permits, when it permits one. */
-  permittedAmount: Money | null;
-  /** Ceiling that applied, when a ceiling was in play. */
-  appliedCeiling: Cents | null;
-
-  /** Gaps the engine took into account. Copied from the bundle. */
-  evidenceGaps: EvidenceGap[];
+  effect: Effect;
 
   /**
-   * What would have had to differ for the decision to go the other way.
-   * Structured, so the explainer renders it deterministically.
+   * The rule that produced this verdict. Always present — when no authored rule
+   * matched, this is the terminal default.
    */
-  counterfactual: VerdictCounterfactual | null;
-}
+  matchedRuleId: string;
+  matchedRuleOrdinal: number;
+  /** Echoed so explanations can render the citation without a second lookup. */
+  matchedSourceFragment: string;
 
-export interface VerdictCounterfactual {
-  kind:
-    | "AMOUNT_BELOW_CEILING"
-    | "EVIDENCE_PRESENT"
-    | "DIFFERENT_ACTION"
-    | "RULE_ABSENT";
-  /** Structured detail the explainer templates over. Never free prose. */
-  detail: {
-    ceiling?: Cents;
-    actualAmount?: Cents;
-    missingGaps?: EvidenceGap[];
-    blockingRuleId?: string;
-  };
-}
+  /** How the engine got here. Selects the explanation template. */
+  code: VerdictCode;
 
-export function isAutoExecutable(v: Verdict): boolean {
-  return v.decision === "ALLOW_AUTO";
+  /**
+   * Machine-readable detail for the explanation layer — the ceiling that was
+   * exceeded, the completeness flag that was false, and so on. Never prose.
+   */
+  detail?: Record<string, string | number | boolean | null>;
 }

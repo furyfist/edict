@@ -1,40 +1,36 @@
-import type { EvidenceBundle, ProposalResult } from "../contracts";
-import { isModelConfigured } from "./client";
-import { realPropose } from "./propose";
-import { stubPropose } from "./stub";
+import { isConfigured } from "./client";
+import { createLlmAgent } from "./llm";
+import { createStubAgent } from "./stub";
+import type { Agent } from "./types";
 
 /**
- * The agent.
+ * The active agent.
  *
- * It proposes. It never authorizes, and it cannot: this directory imports
- * `lib/contracts` and nothing else. There is no import path from here to
- * `lib/prava`, `lib/ledger`, or `lib/policy/engine`, which means the model's
- * isolation from money is a property of the module graph rather than a promise
- * made in a prompt. A test asserts it.
+ * The real proposer when an API key is present, the deterministic stub
+ * otherwise. Falling back rather than throwing is deliberate: an unconfigured
+ * environment should still run the full pipeline, and on demo day a rate limit
+ * or an outage degrades to a working system instead of a broken one.
  *
- * `AGENT_MODE` selects the proposer. The real one lands in M2 behind this same
- * signature, so the swap touches no file outside this directory.
+ * Which one ran is recorded in every ledger entry's `decidedBy.stubbed` field,
+ * so the fallback is never invisible.
  */
 
-export type Proposer = (bundle: EvidenceBundle) => Promise<ProposalResult>;
+let agent: Agent | null = null;
 
-/**
- * Propose an action for one renewal.
- *
- * The swap between the stub and the real proposer happens here and nowhere
- * else. The tick runner calls `propose` and cannot tell which one answered,
- * which is what makes the stub a live fallback rather than a dead branch: set
- * `AGENT_MODE=stub` and the demo continues with no code change.
- */
-export async function propose(
-  bundle: EvidenceBundle,
-): Promise<ProposalResult> {
-  if (isModelConfigured()) {
-    return realPropose(bundle);
+export function activeAgent(): Agent {
+  if (!agent) {
+    agent = isConfigured() ? createLlmAgent() : createStubAgent();
   }
-  return stubPropose(bundle);
+  return agent;
 }
 
-export { realPropose, renderPrompt } from "./propose";
-export { stubPropose } from "./stub";
-export { validateProposal } from "./validate";
+/** Test seam, and the demo-day escape hatch back to the stub. */
+export function __setAgent(next: Agent | null) {
+  agent = next;
+}
+
+export { createStubAgent } from "./stub";
+export { createLlmAgent } from "./llm";
+export { validateProposal, parseAndValidate } from "./validate";
+export { isConfigured, modelId } from "./client";
+export type { Agent, AgentInput, AgentResult } from "./types";

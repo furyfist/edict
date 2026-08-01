@@ -1,130 +1,81 @@
-import type { Cents, Currency } from "../contracts";
+import type { Cents, Currency, MandateStatus } from "../contracts";
 
 /**
- * The payment boundary.
+ * THE PAYMENT BOUNDARY.
  *
- * This interface is written before either implementation. The mock satisfies it
- * in M1 and the real adapter satisfies it in M3, which means the swap is one
- * module behind an unchanged signature and a failure after the swap has exactly
- * one suspect.
+ * Exactly one module in this system can move money, and this interface is its
+ * shape. It is written before either implementation — the mock in M1 and the
+ * real Prava adapter in M3 both satisfy it, so the swap touches one file.
  *
- * Everything in this file is about one property: exactly one module can move
- * money, and every way it can fail is a value rather than an exception. A
- * thrown error at the payment boundary is a decision made by whoever wrote the
- * catch block; a typed result is a decision made here, once.
+ * Nothing else in the codebase talks to Prava. `lib/agent` cannot even import
+ * this module: the separation is a fact about the dependency graph, not a
+ * promise made in a prompt.
  */
 
-export type MandateStatus = "ACTIVE" | "PAUSED" | "CANCELLED" | "EXPIRED";
-
-export interface Mandate {
-  /** Prava's identifier. The thing a judge cross-checks in Prava's dashboard. */
+export interface MandateSnapshot {
   mandateId: string;
   status: MandateStatus;
-  /** Enforced in the tokenized credential itself, not by us. */
-  amountCeilingCents: Cents;
-  spentCents: Cents;
-  currency: Currency;
-  merchantId: string | null;
+  /** Per-charge ceiling. Enforced in the tokenized credential, not by us. */
+  capCents: Cents;
+  remainingCents: Cents;
   expiresAt: string | null;
 }
+
+/**
+ * A typed failure. `retryable` is the field that matters operationally:
+ * transient errors get exactly one retry, declines get none. Retrying a decline
+ * is how a demo charges twice.
+ */
+export interface PaymentFailure {
+  kind:
+    | "DECLINED_OVER_CAP"
+    | "MANDATE_INACTIVE"
+    | "MANDATE_NOT_FOUND"
+    | "TRANSIENT"
+    | "UNKNOWN";
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export type ChargeResult =
+  | { ok: true; chargeId: string; mandateId: string; status: string }
+  | { ok: false; mandateId: string; failure: PaymentFailure };
 
 export interface ChargeRequest {
   mandateId: string;
   amountCents: Cents;
   currency: Currency;
-  /** Scopes the charge to one renewal cycle. Replays return the same charge. */
+  /**
+   * Derived from (renewalId, cycleStart). Prava detects duplicate transactions
+   * within a session, and this makes our side idempotent too.
+   */
   idempotencyKey: string;
-  description: string;
 }
 
-export interface ChargeSuccess {
-  ok: true;
-  chargeId: string;
-  sessionId: string;
-  amountCents: Cents;
-  currency: Currency;
-}
-
-/**
- * Why a charge did not happen.
- *
- * The distinction that matters operationally is between DECLINED and the rest.
- * A decline is an answer — the network considered the charge and refused it —
- * and answers are never retried. A timeout or an unreachable host is the
- * absence of an answer, and those retry exactly once.
- */
-export const CHARGE_FAILURE_KINDS = [
-  "DECLINED",
-  "MANDATE_PAUSED",
-  "MANDATE_NOT_FOUND",
-  "MANDATE_EXPIRED",
-  "TIMEOUT",
-  "UNREACHABLE",
-  "MALFORMED_RESPONSE",
-] as const;
-export type ChargeFailureKind = (typeof CHARGE_FAILURE_KINDS)[number];
-
-/** Failures that are answers. Retrying one is asking a settled question again. */
-export const TERMINAL_FAILURES: readonly ChargeFailureKind[] = [
-  "DECLINED",
-  "MANDATE_PAUSED",
-  "MANDATE_NOT_FOUND",
-  "MANDATE_EXPIRED",
-];
-
-export interface ChargeFailure {
-  ok: false;
-  kind: ChargeFailureKind;
-  /** The network's own words, carried through to the ledger unedited. */
-  networkMessage: string;
-  /** Present when the network issued an id before refusing. */
-  chargeId: string | null;
-  sessionId: string | null;
-}
-
-export type ChargeResult = ChargeSuccess | ChargeFailure;
-
-export function isRetryable(failure: ChargeFailure): boolean {
-  return !TERMINAL_FAILURES.includes(failure.kind);
-}
-
-export interface MandateResult {
-  ok: boolean;
-  mandate: Mandate | null;
-  error: string | null;
-}
-
-export interface CreateMandateRequest {
-  vendorId: string;
-  merchantId: string | null;
-  amountCeilingCents: Cents;
-  currency: Currency;
-  expiresAt: string | null;
-  /** Set when the mandate originates in a passkey ceremony. */
-  passkeyCeremonyId?: string;
-}
-
-export interface HealthResult {
-  healthy: boolean;
-  detail: string;
-}
-
-/**
- * The payment adapter. Exactly one implementation is live at a time, and
- * exactly one caller invokes it: the outcome router.
- */
-export interface PravaAdapter {
-  readonly mode: "mock" | "live";
-
+export interface PaymentBoundary {
+  /** The only method that moves money. */
   charge(request: ChargeRequest): Promise<ChargeResult>;
 
-  createMandate(request: CreateMandateRequest): Promise<MandateResult>;
-  getMandate(mandateId: string): Promise<MandateResult>;
-  pauseMandate(mandateId: string): Promise<MandateResult>;
-  resumeMandate(mandateId: string): Promise<MandateResult>;
-  cancelMandate(mandateId: string): Promise<MandateResult>;
-  listMandates(): Promise<Mandate[]>;
+  getMandate(mandateId: string): Promise<MandateSnapshot | null>;
+  pauseMandate(mandateId: string): Promise<MandateSnapshot | null>;
+  resumeMandate(mandateId: string): Promise<MandateSnapshot | null>;
+  cancelMandate(mandateId: string): Promise<MandateSnapshot | null>;
 
-  /** Checked before a tick adjudicates anything. Unhealthy is a halt. */
-  health(): Promise<HealthResult>;
+  /** Checked before a tick runs. A failing adapter halts rather than guesses. */
+  health(): Promise<boolean>;
+
+  /** Identifies which implementation is live. Surfaced in the ledger. */
+  readonly name: "mock" | "prava";
+}
+
+/**
+ * Storage seam for the mock. The real adapter has no equivalent — Prava is the
+ * store. This exists so the mock can be driven from an in-memory map in tests
+ * and from the mandate mirror at runtime.
+ */
+export interface MandateStore {
+  get(mandateId: string): Promise<MandateSnapshot | null>;
+  setStatus(mandateId: string, status: MandateStatus): Promise<MandateSnapshot | null>;
+  consume(mandateId: string, amountCents: Cents): Promise<void>;
 }

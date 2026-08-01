@@ -1,201 +1,159 @@
-import { getClockState } from "@/lib/clock";
-import { formatMoney } from "@/lib/contracts";
-import { listMandateViews } from "@/lib/prava/mandates";
-import { KillSwitch } from "../components/KillSwitch";
-import { DbError, Empty, Panel, PageHeader, PravaId } from "../components/ui";
+import { db } from "@/lib/db/client";
+import { formatCents } from "@/lib/contracts/money";
+import type { Cents } from "@/lib/contracts";
+import { getClock, daysBetween } from "@/lib/clock";
+import { DbUnavailable, PageHeader } from "../_components/page-header";
+import { KillSwitch } from "../_components/kill-switch";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Authority — what the agent can spend.
+ * Authority — the leash, rendered.
  *
- * This page renders the leash. The figure that matters is "remaining", shown
- * as a depleting quantity rather than a number in a table, because the point
- * being made is that the authority is finite and visibly running out.
- *
- * Every figure here is mirrored from Prava and refreshed at the top of each
- * tick. The ceiling is enforced in the tokenized credential itself — this page
- * reports it, and could not raise it even if the code tried.
+ * Remaining authority is shown as a physical, depleting quantity. This is the
+ * highest-value pixel in the product: it turns an abstract security property
+ * into something a viewer can see the size of. An agent with a visible ceiling
+ * reads as safe in a way that no amount of prose achieves.
  */
 export default async function AuthorityPage() {
-  let mandates;
-  let clock;
+  let mandates: Array<{
+    vendorId: string;
+    vendorName: string;
+    pravaMandateId: string;
+    status: string;
+    capCents: number;
+    remainingCents: number;
+    expiresAt: Date | null;
+  }> = [];
+  let engaged = false;
+  // Never defaulted to wall time. If the clock cannot be read there is nothing
+  // to render against it anyway, and a silent fallback to real time would make
+  // every "expires in" figure quietly wrong.
+  let clock: Date | null = null;
+  let unavailable = false;
 
   try {
-    [mandates, clock] = await Promise.all([
-      listMandateViews(),
-      getClockState(),
-    ]);
+    clock = await getClock();
+    const state = await db.systemState.findUnique({ where: { id: "singleton" } });
+    engaged = state?.killSwitchEngaged ?? false;
+
+    const rows = await db.mandate.findMany({ orderBy: { createdAt: "asc" } });
+    const vendors = await db.vendor.findMany({
+      select: { id: true, name: true },
+    });
+    const nameOf = new Map(vendors.map((v) => [v.id, v.name]));
+
+    mandates = rows.map((row) => ({
+      vendorId: row.vendorId,
+      vendorName: nameOf.get(row.vendorId) ?? row.vendorId,
+      pravaMandateId: row.pravaMandateId,
+      status: row.status,
+      capCents: row.capCents,
+      remainingCents: row.remainingCents,
+      expiresAt: row.expiresAt,
+    }));
   } catch {
-    return (
-      <>
-        <PageHeader title="Authority" question="What can the agent spend?" />
-        <DbError />
-      </>
-    );
+    unavailable = true;
   }
 
-  const totalAuthorized = mandates.reduce((sum, m) => sum + m.authorizedCents, 0);
-  const totalRemaining = mandates.reduce((sum, m) => sum + m.remainingCents, 0);
-
   return (
-    <>
+    <section>
       <PageHeader
         title="Authority"
-        question="What can the agent spend, and how much is left?"
-      >
-        <div style={{ textAlign: "right", fontSize: 12 }}>
-          <div style={{ color: "var(--muted)" }}>Remaining across all mandates</div>
-          <div className="mono" style={{ fontSize: 18 }}>
-            {formatMoney({ cents: totalRemaining, currency: "USD" })}
-            <span style={{ color: "var(--muted)", fontSize: 12 }}>
-              {" "}
-              of {formatMoney({ cents: totalAuthorized, currency: "USD" })}
-            </span>
+        question="How much rope the agent has left. The amount ceiling is enforced in the tokenized credential — not by this application."
+      />
+
+      {unavailable ? (
+        <DbUnavailable />
+      ) : (
+        <>
+          <div className="mt-6">
+            <KillSwitch engaged={engaged} />
           </div>
-        </div>
-      </PageHeader>
 
-      <p style={{ color: "var(--muted)", fontSize: 13, maxWidth: 680, marginTop: 0 }}>
-        These ceilings are enforced in the payment credential itself, by Prava.
-        The policy engine is an earlier, separate gate. A charge above a ceiling
-        is declined at the network whether or not the engine was consulted.
-      </p>
+          {mandates.length === 0 ? (
+            <p className="mt-6 text-sm text-neutral-500">
+              No mandates yet. The agent has no authority at all.
+            </p>
+          ) : (
+            <ul className="mt-6 space-y-4">
+              {mandates.map((mandate) => {
+                const spent = mandate.capCents - mandate.remainingCents;
+                const pct =
+                  mandate.capCents > 0
+                    ? Math.max(
+                        0,
+                        Math.min(100, (mandate.remainingCents / mandate.capCents) * 100),
+                      )
+                    : 0;
+                const daysLeft =
+                  mandate.expiresAt && clock
+                    ? daysBetween(clock, mandate.expiresAt)
+                    : null;
+                const active = mandate.status === "ACTIVE";
 
-      <Panel padded={false}>
-        {mandates.length === 0 ? (
-          <Empty>No mandates exist yet. Run the seed.</Empty>
-        ) : (
-          mandates.map((mandate) => {
-            const pct =
-              mandate.authorizedCents > 0
-                ? Math.round(
-                    (mandate.remainingCents / mandate.authorizedCents) * 100,
-                  )
-                : 0;
-            const tone =
-              mandate.status !== "ACTIVE"
-                ? "var(--muted)"
-                : pct <= 15
-                  ? "var(--deny)"
-                  : pct <= 40
-                    ? "var(--escalate)"
-                    : "var(--allow)";
-
-            return (
-              <div
-                key={mandate.pravaMandateId}
-                style={{
-                  padding: "14px 16px",
-                  borderBottom: "1px solid var(--border)",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "baseline",
-                    gap: 10,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <strong style={{ fontSize: 14 }}>{mandate.vendorId}</strong>
-                  <span
-                    className="mono"
-                    style={{
-                      fontSize: 11,
-                      color: mandate.status === "ACTIVE" ? tone : "var(--muted)",
-                      border: `1px solid ${mandate.status === "ACTIVE" ? tone : "var(--border)"}`,
-                      borderRadius: 3,
-                      padding: "1px 6px",
-                    }}
+                return (
+                  <li
+                    key={mandate.vendorId}
+                    className="rounded border border-neutral-800 p-4"
                   >
-                    {mandate.status}
-                  </span>
-                  <span
-                    className="mono"
-                    style={{ marginLeft: "auto", fontSize: 13 }}
-                  >
-                    {formatMoney({
-                      cents: mandate.remainingCents,
-                      currency: "USD",
-                    })}{" "}
-                    <span style={{ color: "var(--muted)" }}>remaining</span>
-                  </span>
-                </div>
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <span className="text-sm font-medium text-neutral-100">
+                        {mandate.vendorName}
+                      </span>
+                      <span
+                        className={`text-[10px] uppercase tracking-wide ${
+                          active ? "text-emerald-300" : "text-amber-300"
+                        }`}
+                      >
+                        {mandate.status.toLowerCase()}
+                      </span>
+                    </div>
 
-                {/* The leash, drawn. */}
-                <div
-                  style={{
-                    height: 6,
-                    background: "var(--panel-2)",
-                    borderRadius: 3,
-                    marginTop: 10,
-                    overflow: "hidden",
-                  }}
-                  role="meter"
-                  aria-valuenow={pct}
-                  aria-label={`${mandate.vendorId} remaining authority`}
-                >
-                  <div
-                    style={{
-                      width: `${pct}%`,
-                      height: "100%",
-                      background: tone,
-                    }}
-                  />
-                </div>
+                    <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
+                      <div
+                        className={active ? "h-full bg-emerald-500/70" : "h-full bg-neutral-600"}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 18,
-                    marginTop: 8,
-                    fontSize: 12,
-                    color: "var(--muted)",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <span>
-                    Authorized{" "}
-                    <span className="mono" style={{ color: "var(--text)" }}>
-                      {formatMoney({
-                        cents: mandate.authorizedCents,
-                        currency: "USD",
-                      })}
-                    </span>
-                  </span>
-                  <span>
-                    Spent{" "}
-                    <span className="mono" style={{ color: "var(--text)" }}>
-                      {formatMoney({
-                        cents: mandate.spentCents,
-                        currency: "USD",
-                      })}
-                    </span>
-                  </span>
-                  <span>
-                    Expires{" "}
-                    <span className="mono" style={{ color: "var(--text)" }}>
-                      {mandate.expiresAt
-                        ? mandate.expiresAt.toISOString().slice(0, 10)
-                        : "—"}
-                    </span>
-                  </span>
-                </div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-500">
+                      <span>
+                        authorized{" "}
+                        <span className="text-neutral-300">
+                          {formatCents(mandate.capCents as Cents)}
+                        </span>
+                      </span>
+                      <span>
+                        spent{" "}
+                        <span className="text-neutral-300">
+                          {formatCents(spent as Cents)}
+                        </span>
+                      </span>
+                      <span>
+                        remaining{" "}
+                        <span className="text-neutral-100">
+                          {formatCents(mandate.remainingCents as Cents)}
+                        </span>
+                      </span>
+                      {daysLeft !== null ? (
+                        <span>
+                          expires in{" "}
+                          <span className="text-neutral-300">{daysLeft}d</span>
+                        </span>
+                      ) : null}
+                    </div>
 
-                <div style={{ marginTop: 8 }}>
-                  <PravaId label="mandate" value={mandate.pravaMandateId} />
-                  <span style={{ color: "var(--muted)", fontSize: 11 }}>
-                    mirrored {mandate.mirroredAt.toISOString().slice(0, 16).replace("T", " ")}Z
-                  </span>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </Panel>
-
-      <KillSwitch engaged={clock.killSwitchOn} />
-    </>
+                    <p className="mt-2 break-all font-mono text-[10px] text-neutral-600">
+                      {mandate.pravaMandateId}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
   );
 }

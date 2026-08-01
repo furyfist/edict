@@ -1,269 +1,244 @@
-import { prisma } from "../db/client";
-import { plusHours } from "../clock";
+import { cents } from "../contracts/money";
+import { evaluate } from "../policy/engine";
 import {
-  AGENT,
-  ENGINE,
-  NETWORK,
-  NOBODY,
-  TICK,
-  appendEntry,
-  captureIntent,
-  closeIntent,
-  DuplicateEntryError,
-} from "../ledger";
-import { getPravaAdapter, isRetryable } from "../prava";
-import type { ChargeResult, PravaAdapter } from "../prava";
+  counterfactualLine,
+  explainOutcome,
+  refusalCodeFor,
+} from "../explain";
 import type {
+  AuthorizedBy,
+  Cents,
+  DecidedBy,
   EvidenceBundle,
-  LedgerOutcome,
+  Outcome,
+  Policy,
   Proposal,
+  RefusalCode,
   Verdict,
 } from "../contracts";
+import { appendEntry as defaultAppendEntry } from "../ledger";
+import type { LedgerCompletion, LedgerDraft } from "../ledger";
+import { paymentBoundary } from "../prava";
+import type { PaymentBoundary } from "../prava";
+import { raiseApproval as defaultRaiseApproval } from "./approvals";
 
 /**
- * The outcome router.
+ * The outcome router: turns a verdict into an effect.
  *
- * It turns a verdict into one of three things: a charge, an approval request,
- * or a refusal. All the branching lives here, which is what lets the engine
- * stay a pure function — every "if the decision was X, then do Y" in the system
- * is in this file rather than smuggled into the evaluator.
+ * Branching lives here rather than in the engine so the engine stays a pure
+ * function. This module is where the three paths diverge — charge, escalate,
+ * refuse — and where the capture-before-charge ordering is enforced.
  *
- * This is also the only caller of the payment adapter. Exactly one module can
- * move money and exactly one module asks it to.
+ * Dependencies are injected so the whole thing can be exercised against an
+ * in-memory adapter and a fake ledger, with no database.
  */
-
-/** Consent is to act on specific evidence, and evidence ages. */
-export const APPROVAL_TTL_HOURS = 24;
 
 export interface RouteInput {
   tickId: string;
-  recordedAt: Date;
-  bundle: EvidenceBundle;
-  proposal: Proposal | null;
-  verdict: Verdict;
-  /** The mandate this vendor's charges run against, when one exists. */
-  mandateId: string | null;
-  adapter?: PravaAdapter;
+  clock: Date;
+  proposal: Proposal;
+  evidence: EvidenceBundle;
+  policy: Policy;
+  decidedBy: DecidedBy;
+}
+
+export interface RouterDeps {
+  boundary: PaymentBoundary;
+  appendEntry: (draft: LedgerDraft, completion: LedgerCompletion) => Promise<string>;
+  raiseApproval: (input: {
+    clock: Date;
+    proposal: Proposal;
+    evidence: EvidenceBundle;
+    policy: Policy;
+    verdict: Verdict;
+  }) => Promise<string>;
 }
 
 export interface RouteResult {
-  entryId: string | null;
-  outcome: LedgerOutcome;
-  /** True when the entry already existed for this renewal and cycle. */
-  duplicate: boolean;
+  entryId: string;
+  outcome: Outcome;
+  verdict: Verdict;
+  approvalId?: string;
 }
 
-export async function route(input: RouteInput): Promise<RouteResult> {
-  switch (input.verdict.decision) {
-    case "ALLOW_AUTO":
-      return executeCharge(input);
-    case "REQUIRE_APPROVAL":
-      return raiseApproval(input);
-    case "DENY":
-      return recordRefusal(input, "REFUSED");
-    default:
-      // Unreachable given the contract, and if it were reachable the safe
-      // reading of an unrecognized decision is a refusal, not a charge.
-      return recordRefusal(input, "REFUSED");
-  }
-}
-
-/** Shared attribution. Four actors, named separately, on every entry. */
-function attribution(input: RouteInput) {
+export function defaultDeps(): RouterDeps {
   return {
-    tickId: input.tickId,
-    recordedAt: input.recordedAt,
-    vendorId: input.bundle.vendor.id,
-    renewalId: input.bundle.renewal.id,
-    cycleKey: input.bundle.renewal.cycleKey,
-    decidedBy: AGENT,
-    authorizedBy: ENGINE,
-    recordedBy: TICK,
-    decision: input.verdict.decision,
-    reason: input.verdict.reason,
-    citedRuleId: input.verdict.citedRuleId,
-    citedSourceFragment: input.verdict.citedSourceFragment,
-    policyVersionId: input.verdict.policyVersionId,
-    agentRationale: input.proposal ? input.proposal.rationale : null,
-    agentRejectedAlternative: input.proposal
-      ? input.proposal.rejectedAlternative
-      : null,
+    boundary: paymentBoundary(),
+    appendEntry: defaultAppendEntry,
+    raiseApproval: defaultRaiseApproval,
   };
 }
 
 /**
- * The engine permitted this. Money moves — through the one boundary, with the
- * intention captured before the call and the answer appended after it.
+ * Explanations come from `lib/explain` — deterministic templates, no model.
+ *
+ * They are rendered here, at write time, and stored on the entry so the record
+ * shows what was said then. The same module supplies the read-side derived
+ * lines, which keeps one vocabulary across write and display.
  */
-async function executeCharge(input: RouteInput): Promise<RouteResult> {
-  const { verdict, bundle } = input;
-  const amount = verdict.permittedAmount;
-
-  // An ALLOW_AUTO on an action that moves no money is recorded as executed
-  // without touching the adapter.
-  if (!amount) {
-    return recordRefusal(input, "EXECUTED", NOBODY);
-  }
-
-  if (!input.mandateId) {
-    // Permission without a credential to spend under. Nothing is charged, and
-    // the reason is recorded rather than being logged and swallowed.
-    return recordRefusal(input, "REFUSED", NOBODY, {
-      note: "The policy permitted this charge but no mandate exists for the vendor.",
-    });
-  }
-
-  const adapter = input.adapter ?? getPravaAdapter();
-  const idempotencyKey = `${bundle.renewal.id}:${bundle.renewal.cycleKey}`;
-
-  // ---- capture before charge ----
-  let entryId: string;
-  try {
-    entryId = await captureIntent({
-      ...attribution(input),
-      amount,
-      executedBy: NETWORK,
-      pravaMandateId: input.mandateId,
-      detail: { idempotencyKey, adapterMode: adapter.mode },
-    });
-  } catch (error) {
-    if (error instanceof DuplicateEntryError) {
-      return { entryId: null, outcome: "EXECUTED", duplicate: true };
-    }
-    throw error;
-  }
-
-  // ---- charge ----
-  let result = await adapter.charge({
-    mandateId: input.mandateId,
-    amountCents: amount.cents,
-    currency: amount.currency,
-    idempotencyKey,
-    description: `${bundle.vendor.name} ${bundle.renewal.cycleKey}`,
-  });
-
-  // A decline is an answer and is never retried. The absence of an answer —
-  // a timeout, an unreachable host — retries exactly once.
-  if (!result.ok && isRetryable(result)) {
-    result = await adapter.charge({
-      mandateId: input.mandateId,
-      amountCents: amount.cents,
-      currency: amount.currency,
-      idempotencyKey,
-      description: `${bundle.vendor.name} ${bundle.renewal.cycleKey}`,
-    });
-  }
-
-  await closeIntent({
-    entryId,
-    outcome: outcomeFor(result),
-    pravaChargeId: result.ok ? result.chargeId : result.chargeId,
-    pravaSessionId: result.ok ? result.sessionId : result.sessionId,
-    detail: result.ok
-      ? { chargedCents: result.amountCents }
-      : {
-          failureKind: result.kind,
-          networkMessage: result.networkMessage,
-          retried: isRetryable(result),
-          note: "Nothing was charged.",
-        },
-  });
-
-  return { entryId, outcome: outcomeFor(result), duplicate: false };
+function explain(
+  outcome: Outcome,
+  verdict: Verdict,
+  proposal: Proposal,
+  evidence: EvidenceBundle,
+  failure?: string,
+): string {
+  return explainOutcome({ outcome, verdict, proposal, evidence, failure });
 }
 
-/** The four outcomes a charge attempt can close with. Narrower than LedgerOutcome. */
-type ChargeOutcome =
-  | "EXECUTED"
-  | "APPROVED_AND_EXECUTED"
-  | "NETWORK_DECLINE"
-  | "ADAPTER_FAILURE";
-
-function outcomeFor(result: ChargeResult): ChargeOutcome {
-  if (result.ok) return "EXECUTED";
-  switch (result.kind) {
-    case "DECLINED":
-    case "MANDATE_PAUSED":
-    case "MANDATE_EXPIRED":
-    case "MANDATE_NOT_FOUND":
-      return "NETWORK_DECLINE";
-    default:
-      return "ADAPTER_FAILURE";
-  }
-}
-
-/**
- * The engine wants a human. An approval request is raised carrying a frozen
- * snapshot of the evidence and verdict it was raised on, and the ledger records
- * the escalation immediately — a pending decision is a thing that happened.
- */
-async function raiseApproval(input: RouteInput): Promise<RouteResult> {
-  const { bundle, verdict } = input;
-
-  const existing = await prisma.approvalRequest.findFirst({
-    where: {
-      renewalId: bundle.renewal.id,
-      cycleKey: bundle.renewal.cycleKey,
-    },
-    select: { id: true },
-  });
-
-  if (!existing) {
-    await prisma.approvalRequest.create({
-      data: {
-        renewalId: bundle.renewal.id,
-        cycleKey: bundle.renewal.cycleKey,
-        vendorId: bundle.vendor.id,
-        // In-app approval permits a charge within existing authority. Raising a
-        // ceiling is a different kind, decided in M3 at the point of approval.
-        kind: "POLICY_EXCEPTION",
-        amountCents: bundle.renewal.amount.cents,
-        currency: bundle.renewal.amount.currency,
-        evidenceSnapshot: JSON.parse(JSON.stringify(bundle)),
-        verdictSnapshot: JSON.parse(JSON.stringify(verdict)),
-        requestedAt: input.recordedAt,
-        expiresAt: plusHours(input.recordedAt, APPROVAL_TTL_HOURS),
-      },
-    });
-  }
-
-  return recordRefusal(input, "ESCALATED", NOBODY, {
-    approvalExpiresInHours: APPROVAL_TTL_HOURS,
-  });
-}
-
-/**
- * Nothing moved. Every path through this function ends with a visible ledger
- * entry — a refusal that is not written down is indistinguishable from a
- * failure to notice.
- */
-async function recordRefusal(
+export async function routeOutcome(
   input: RouteInput,
-  outcome: LedgerOutcome,
-  executedBy = NOBODY,
-  detail: Record<string, unknown> = {},
+  deps: RouterDeps = defaultDeps(),
 ): Promise<RouteResult> {
-  try {
-    const entryId = await appendEntry({
-      ...attribution(input),
-      outcome,
-      amount:
-        outcome === "EXECUTED"
-          ? input.verdict.permittedAmount
-          : input.bundle.renewal.amount,
-      executedBy,
-      detail: {
-        ...detail,
-        ...(outcome === "EXECUTED" ? {} : { note: "Nothing was charged." }),
-        counterfactual: input.verdict.counterfactual ?? null,
-        evidenceGaps: input.verdict.evidenceGaps,
-      },
+  const { proposal, evidence, policy } = input;
+
+  const verdict = evaluate({ proposal, evidence, policy });
+
+  const authorizedBy: AuthorizedBy = {
+    policyVersionId: policy.id,
+    policyVersion: policy.version,
+    ruleId: verdict.matchedRuleId,
+    ruleOrdinal: verdict.matchedRuleOrdinal,
+    sourceFragment: verdict.matchedSourceFragment,
+    approverId: null,
+    approvalId: null,
+    passkeyAt: null,
+  };
+
+  // CAPTURE BEFORE CHARGE. Everything needed to reconstruct the record exists
+  // before any money is touched. Do not move this below the charge.
+  const draft: LedgerDraft = {
+    tickId: input.tickId,
+    clockAt: input.clock,
+    vendorId: evidence.vendorId,
+    vendorName: evidence.vendorName,
+    renewalId: evidence.renewalId,
+    cycleStart: new Date(`${evidence.cycleStart}T00:00:00.000Z`),
+    proposedAction: proposal.action,
+    proposedAmountCents: proposal.amountCents,
+    decidedBy: input.decidedBy,
+    authorizedBy,
+    evidence,
+    alternative: proposal.alternative,
+    agentRationale: proposal.rationale,
+    counterfactualCents: evidence.renewal.amountCents,
+  };
+
+  const counterfactual = counterfactualLine(evidence);
+  const zero = cents(0);
+
+  // -- DENY -----------------------------------------------------------------
+  if (verdict.effect === "DENY") {
+    const entryId = await deps.appendEntry(draft, {
+      outcome: "REFUSED",
+      refusalCode: refusalCodeFor(verdict),
+      chargedCents: zero,
+      explanation: explain("REFUSED", verdict, proposal, evidence),
+      counterfactual,
     });
-    return { entryId, outcome, duplicate: false };
-  } catch (error) {
-    if (error instanceof DuplicateEntryError) {
-      return { entryId: null, outcome, duplicate: true };
-    }
-    throw error;
+    return { entryId, outcome: "REFUSED", verdict };
   }
+
+  // -- REQUIRE_APPROVAL -----------------------------------------------------
+  // Raise the request first, so the ledger entry can name it. Which of the two
+  // approval types this is depends on WHY the engine escalated: over the
+  // mandate ceiling means only a passkey can help.
+  if (verdict.effect === "REQUIRE_APPROVAL") {
+    const approvalId = await deps.raiseApproval({
+      clock: input.clock,
+      proposal,
+      evidence,
+      policy,
+      verdict,
+    });
+
+    const entryId = await deps.appendEntry(
+      {
+        ...draft,
+        authorizedBy: { ...authorizedBy, approvalId },
+      },
+      {
+        outcome: "ESCALATED",
+        chargedCents: zero,
+        explanation: explain("ESCALATED", verdict, proposal, evidence),
+        counterfactual,
+      },
+    );
+    return { entryId, outcome: "ESCALATED", verdict, approvalId };
+  }
+
+  // -- ALLOW_AUTO -----------------------------------------------------------
+  const mandateId = evidence.mandate.mandateId;
+  if (!mandateId) {
+    const entryId = await deps.appendEntry(draft, {
+      outcome: "REFUSED",
+      refusalCode: "OUTSIDE_AUTHORITY",
+      chargedCents: zero,
+      explanation: explain("REFUSED", verdict, proposal, evidence),
+      counterfactual,
+    });
+    return { entryId, outcome: "REFUSED", verdict };
+  }
+
+  const request = {
+    mandateId,
+    amountCents: proposal.amountCents,
+    currency: "USD" as const,
+    idempotencyKey: `${evidence.renewalId}:${evidence.cycleStart}`,
+  };
+
+  let result = await deps.boundary.charge(request);
+
+  // Exactly one retry, and only for transient failures. Declines are never
+  // retried — that is how a demo charges twice.
+  if (!result.ok && result.failure.retryable) {
+    result = await deps.boundary.charge(request);
+  }
+
+  if (result.ok) {
+    const entryId = await deps.appendEntry(draft, {
+      outcome: "EXECUTED",
+      chargedCents: proposal.amountCents,
+      executedBy: {
+        provider: "prava",
+        mandateId: result.mandateId,
+        chargeId: result.chargeId,
+        status: result.status,
+      },
+      explanation: explain("EXECUTED", verdict, proposal, evidence),
+      counterfactual,
+    });
+    return { entryId, outcome: "EXECUTED", verdict };
+  }
+
+  const declined =
+    result.failure.kind === "DECLINED_OVER_CAP" ||
+    result.failure.kind === "MANDATE_INACTIVE" ||
+    result.failure.kind === "MANDATE_NOT_FOUND";
+
+  const outcome: Outcome = declined ? "REFUSED" : "FAILED";
+  const refusalCode: RefusalCode | null = declined
+    ? result.failure.kind === "DECLINED_OVER_CAP"
+      ? "NETWORK_DECLINE"
+      : "MANDATE_INACTIVE"
+    : null;
+
+  const entryId = await deps.appendEntry(draft, {
+    outcome,
+    refusalCode,
+    chargedCents: zero,
+    executedBy: {
+      provider: "prava",
+      mandateId: result.mandateId,
+      chargeId: null,
+      status: result.failure.code,
+    },
+    explanation: explain(outcome, verdict, proposal, evidence, result.failure.message),
+    counterfactual,
+    error: { code: result.failure.code, message: result.failure.message },
+  });
+
+  return { entryId, outcome, verdict };
 }
+
+export type { LedgerDraft, LedgerCompletion } from "../ledger";

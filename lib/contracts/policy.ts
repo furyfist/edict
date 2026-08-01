@@ -1,99 +1,92 @@
-import type { Cents, Currency, IsoTimestamp } from "./common";
+import type { Cents } from "./money";
+import type { Effect, Frequency } from "./enums";
 
 /**
- * Contract 3 — the policy rule.
+ * CONTRACT 3 — PolicyRule and Policy
  *
- * The compiled form of one sentence a human wrote. Rules are data, evaluated by
- * a pure function. Every rule carries the fragment of English it came from, so
- * a refusal can quote the user's own words back to them.
+ * A policy is a versioned, ordered list of rules compiled from English the user
+ * actually wrote. Policies are immutable: editing produces a new version.
+ *
+ * Two invariants live in this shape:
+ *
+ *  1. Every rule carries `sourceFragment` — the words it was derived from. A
+ *     rule with no textual origin is rejected at compile time, because every
+ *     enforcement in this product must trace back to something a human said.
+ *
+ *  2. An ALLOW_AUTO rule must carry `maxAmountCents`. Unbounded autonomy is not
+ *     merely discouraged, it is uncompilable. Enforced where authority is
+ *     created, not where it is spent.
  */
 
-export const RULE_EFFECTS = ["ALLOW_AUTO", "REQUIRE_APPROVAL", "DENY"] as const;
-export type RuleEffect = (typeof RULE_EFFECTS)[number];
+export type RuleScope =
+  | { kind: "VENDOR"; vendorId: string }
+  | { kind: "CATEGORY"; category: string }
+  | { kind: "ANY" };
 
-/** Facts a condition can address. Closed set — the engine matches on these. */
-export const CONDITION_FIELDS = [
-  "AMOUNT",
-  "VENDOR_ID",
-  "VENDOR_CATEGORY",
-  "PRICE_INCREASE_BASIS_POINTS",
-  "DORMANT_SEAT_COUNT",
-  "DORMANT_SEAT_RATIO_BASIS_POINTS",
-  "ACTION",
-  "EVIDENCE_GAP",
-] as const;
-export type ConditionField = (typeof CONDITION_FIELDS)[number];
-
-export const CONDITION_OPERATORS = [
-  "LTE",
-  "LT",
-  "GTE",
-  "GT",
-  "EQ",
-  "NEQ",
-  "IN",
-  "NOT_IN",
-  "PRESENT",
-  "ABSENT",
-] as const;
-export type ConditionOperator = (typeof CONDITION_OPERATORS)[number];
-
-export interface RuleCondition {
-  field: ConditionField;
-  operator: ConditionOperator;
-  /**
-   * Comparison operand. Numeric for AMOUNT (cents) and basis-point fields,
-   * string or string[] for identity fields, absent for PRESENT/ABSENT.
-   */
-  value?: number | string | string[];
+export interface RuleConditions {
+  /** Per-charge ceiling. Required on ALLOW_AUTO rules. */
+  maxAmountCents?: Cents;
+  /** Minimum active-seat percentage, 0–100. */
+  minActiveSeatPct?: number;
+  /** Restricts the rule to renewals of this billing frequency. */
+  frequency?: Frequency;
+  /** Restricts the rule to renewals falling due within N days. */
+  renewalWithinDays?: number;
 }
 
 export interface PolicyRule {
   id: string;
-  /** Evaluation order within the version. Lower runs first within a pass. */
+  /** Position in the ordered list. Lower is earlier. */
   ordinal: number;
-  effect: RuleEffect;
-  /** All conditions must hold for the rule to match. Empty means always. */
-  conditions: RuleCondition[];
+  effect: Effect;
+  scope: RuleScope;
+  conditions: RuleConditions;
   /**
-   * Amount ceiling in cents. Required on every ALLOW_AUTO rule — an ALLOW_AUTO
-   * without a ceiling is unbounded authority and cannot be compiled.
+   * The span of the user's English this rule was derived from. Must appear
+   * verbatim in the policy text. Rendered inline wherever the rule is cited.
    */
-  amountCeiling: Cents | null;
-  currency: Currency;
-  /** The exact substring of the policy text this rule was compiled from. */
   sourceFragment: string;
-  /** Human-readable restatement, rendered in refusals. */
-  description: string;
 }
 
-export interface PolicyVersion {
+export const POLICY_STATUSES = ["DRAFT", "ACTIVE", "SUPERSEDED"] as const;
+export type PolicyStatus = (typeof POLICY_STATUSES)[number];
+
+export interface Policy {
   id: string;
+  /** Monotonic. Version 1 is the first compiled policy. */
   version: number;
-  /** The English the human wrote. The rules are derived from exactly this. */
-  sourceText: string;
+  /** Exactly what the user typed. Never normalized or rewritten. */
+  englishText: string;
+  /** Ordered by ordinal. Always ends with the terminal default rule. */
   rules: PolicyRule[];
-  /** DRAFT has no force. Only a human confirmation makes a version ACTIVE. */
-  status: "DRAFT" | "ACTIVE" | "SUPERSEDED";
-  createdAt: IsoTimestamp;
-  activatedAt: IsoTimestamp | null;
-  /** Who confirmed it. Never an agent. */
-  activatedBy: string | null;
+  status: PolicyStatus;
+  /** ISO datetime. */
+  compiledAt: string;
+  /** ISO datetime, or null while the policy is still an inert draft. */
+  activatedAt: string | null;
 }
 
 /**
- * The terminal default. Reached when no rule matches. It is REQUIRE_APPROVAL
- * and never ALLOW_AUTO — invariant 6, expressed as a constant so it cannot be
- * accidentally changed by editing branching logic.
+ * The terminal default, appended by the compiler rather than compiled from
+ * text. Unmatched cases are unknown cases, and unknown reaches a human.
+ *
+ * It is not ALLOW (that would be unbounded authority) and not DENY (an agent
+ * that silently refuses everything looks broken rather than careful).
  */
-export const TERMINAL_DEFAULT_RULE: PolicyRule = {
-  id: "terminal-default",
-  ordinal: Number.MAX_SAFE_INTEGER,
-  effect: "REQUIRE_APPROVAL",
-  conditions: [],
-  amountCeiling: null,
-  currency: "USD",
-  sourceFragment: "",
-  description:
-    "No rule in the active policy addresses this action, so it requires human approval.",
-};
+export const TERMINAL_RULE_ID = "terminal-default";
+
+export function terminalRule(ordinal: number): PolicyRule {
+  return {
+    id: TERMINAL_RULE_ID,
+    ordinal,
+    effect: "REQUIRE_APPROVAL",
+    scope: { kind: "ANY" },
+    conditions: {},
+    sourceFragment: "(default: anything not covered above is sent to you)",
+  };
+}
+
+/** An ALLOW_AUTO rule without an amount ceiling is uncompilable. */
+export function hasUnboundedAuthority(rule: PolicyRule): boolean {
+  return rule.effect === "ALLOW_AUTO" && rule.conditions.maxAmountCents === undefined;
+}

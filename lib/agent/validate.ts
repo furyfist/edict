@@ -1,227 +1,180 @@
-import {
-  isProposedAction,
-  type EvidenceBundle,
-  type ProposalResult,
-} from "../contracts";
-import { truncate } from "./client";
+import { ACTIONS, CURRENCY, isAction } from "../contracts";
+import type { Action, EvidenceBundle, Proposal } from "../contracts";
 
 /**
- * The agent output contract.
+ * Agent output contract validation.
  *
- * This is the boundary that converts model output into a proposal or a
- * refusal. It is the most security-relevant file in `lib/agent`, and the rule
- * it enforces is simple: nothing the model says is trusted, and anything that
- * does not conform exactly produces `MALFORMED_PROPOSAL`.
+ * The boundary that turns raw model output into either a Proposal or a refusal.
+ * Pure — no I/O, no model, testable against adversarial fixtures.
  *
- * Three things this deliberately does not do:
+ * Three principles:
  *
- *   It does not retry with a softer prompt. A model that produced malformed
- *   output once will produce it again, and a retry loop that eventually gets a
- *   conforming answer is a loop that rewards persistence over correctness. One
- *   attempt, then a refusal.
+ *  1. **Never repair, never re-prompt.** Output that misses the contract becomes
+ *     MALFORMED and is refused. Asking the model again more nicely is how you
+ *     end up negotiating with something that has already demonstrated it will
+ *     not follow instructions.
  *
- *   It does not repair. No trimming a stray character off a number, no
- *   coercing "45.00" into cents, no mapping "renew_it" onto RENEW. Every
- *   repair is a guess about intent, and a guess about intent at the boundary
- *   between a language model and a payment system is exactly the wrong place
- *   to be clever.
+ *  2. **Bind to the subject.** A proposal must name the vendor and renewal it
+ *     was asked about. A well-formed proposal for a DIFFERENT vendor is a
+ *     redirection attempt — hallucinated or injected — and is the single most
+ *     dangerous thing a compromised model could return, because everything
+ *     downstream would look legitimate.
  *
- *   It does not throw. A malformed response is an ordinary outcome that flows
- *   into the pipeline and gets adjudicated. The engine turns it into an
- *   escalation, and the ledger records it.
+ *  3. **Bound the strings.** Rationale and reason are untrusted text that gets
+ *     stored and rendered. Length caps keep an injected payload from becoming a
+ *     wall of attacker-controlled prose in the ledger.
  */
 
-/** Amounts are integer cents. Anything else is not an amount. */
-function isValidCents(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    Number.isFinite(value) &&
-    value >= 0 &&
-    // A renewal larger than this is not a renewal, it is a typo or an attack.
-    value <= 100_000_00
-  );
+const MAX_RATIONALE_CHARS = 400;
+const MAX_REASON_CHARS = 400;
+
+export type ValidationResult =
+  | { ok: true; proposal: Proposal }
+  | { ok: false; message: string };
+
+function fail(message: string): ValidationResult {
+  return { ok: false, message };
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Render an untrusted value for an error message.
- *
- * `String(value)` is not safe here: an object whose `toString` is a string
- * rather than a function throws when coerced, which would turn a refusal into
- * a crash — inside the very function whose job is to prevent that. The value
- * being described is hostile by assumption, so it is described without being
- * asked anything about itself.
- */
-function describe(value: unknown): string {
-  const type = typeof value;
-  if (value === null) return "null";
-  if (type === "string" || type === "number" || type === "boolean") {
-    return JSON.stringify(value) ?? type;
-  }
-  if (Array.isArray(value)) return "an array";
-  return `a value of type ${type}`;
-}
-
-export interface ValidationContext {
-  bundle: EvidenceBundle;
-  producedBy: string;
-}
-
-function refuse(
-  context: ValidationContext,
-  detail: string,
-): ProposalResult {
-  return {
-    ok: false,
-    failure: {
-      bundleId: context.bundle.bundleId,
-      renewalId: context.bundle.renewal.id,
-      reason: "MALFORMED_PROPOSAL",
-      detail: truncate(detail),
-      producedBy: context.producedBy,
-    },
-  };
+function cleanString(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 
 /**
- * Parse and validate raw model output.
- *
- * `raw` is whatever the model returned. It may be JSON, prose, JSON wrapped in
- * prose, an empty string, or something adversarial.
+ * @param raw      the parsed JSON the model returned
+ * @param evidence the bundle it was asked about — used to bind the subject
  */
 export function validateProposal(
-  raw: string,
-  context: ValidationContext,
-): ProposalResult {
-  const { bundle } = context;
-
-  if (!isNonEmptyString(raw)) {
-    return refuse(context, "The model returned an empty response.");
+  raw: unknown,
+  evidence: EvidenceBundle,
+): ValidationResult {
+  if (!isPlainObject(raw)) {
+    return fail("Output was not a JSON object.");
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    // No salvaging a JSON object out of surrounding prose. A response that is
-    // not JSON did not follow the contract, and extracting the first
-    // brace-delimited span is a repair by another name.
-    return refuse(context, `The model response was not valid JSON: ${raw}`);
+  // -- subject binding ------------------------------------------------------
+  if (raw.vendorId !== evidence.vendorId) {
+    return fail(
+      `Proposal names vendor ${String(raw.vendorId)} but was asked about ${evidence.vendorId}.`,
+    );
   }
-
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return refuse(context, "The model response was not a JSON object.");
-  }
-
-  const candidate = parsed as Record<string, unknown>;
-
-  // Extra fields are a contract violation, not a harmless addition. A response
-  // carrying a field the contract does not define is a response shaped by
-  // something other than the contract.
-  const allowed = new Set([
-    "action",
-    "amountCents",
-    "seatCount",
-    "rationale",
-    "rejectedAlternative",
-  ]);
-  const extra = Object.keys(candidate).filter((key) => !allowed.has(key));
-  if (extra.length > 0) {
-    return refuse(
-      context,
-      `The model response carried unexpected fields: ${extra.join(", ")}.`,
+  if (raw.renewalId !== evidence.renewalId) {
+    return fail(
+      `Proposal names renewal ${String(raw.renewalId)} but was asked about ${evidence.renewalId}.`,
     );
   }
 
-  const action = candidate.action;
-  if (!isProposedAction(action)) {
-    return refuse(
-      context,
-      `The proposed action is not in the permitted set: ${describe(action)}.`,
+  // -- action ---------------------------------------------------------------
+  if (!isAction(raw.action)) {
+    return fail(
+      `Action ${JSON.stringify(raw.action)} is outside the permitted set (${ACTIONS.join(", ")}).`,
     );
   }
 
-  const movesMoney = action === "RENEW" || action === "RENEW_REDUCED_SEATS";
-  const amountCents = candidate.amountCents;
+  // -- amount ---------------------------------------------------------------
+  const amount = raw.amountCents;
+  if (typeof amount !== "number" || !Number.isFinite(amount)) {
+    return fail("amountCents must be a number.");
+  }
+  if (!Number.isInteger(amount)) {
+    return fail("amountCents must be an integer number of cents, not a fraction.");
+  }
+  if (amount <= 0) {
+    return fail("amountCents must be greater than zero.");
+  }
+  if (amount > Number.MAX_SAFE_INTEGER) {
+    return fail("amountCents is out of range.");
+  }
 
-  if (movesMoney) {
-    if (!isValidCents(amountCents)) {
-      return refuse(
-        context,
-        `A ${action} proposal requires an integer amount in cents; got ${describe(amountCents)}.`,
-      );
-    }
-    // A proposal for more than the renewal is worth is refused here as well as
-    // in the engine. Two independent checks, because this one is cheap and the
-    // failure it catches is the one an injected message would produce.
-    if (amountCents > bundle.renewal.amount.cents) {
-      return refuse(
-        context,
-        `The proposed amount ${amountCents} exceeds the renewal amount ${bundle.renewal.amount.cents}.`,
-      );
-    }
-  } else if (amountCents !== null && amountCents !== undefined) {
-    return refuse(
-      context,
-      `A ${action} proposal must not carry an amount.`,
+  // -- currency -------------------------------------------------------------
+  if (raw.currency !== CURRENCY) {
+    return fail(`Currency must be ${CURRENCY}, got ${JSON.stringify(raw.currency)}.`);
+  }
+
+  // -- prose ----------------------------------------------------------------
+  const rationale = cleanString(raw.rationale, MAX_RATIONALE_CHARS);
+  if (!rationale) {
+    return fail("rationale must be a non-empty string.");
+  }
+
+  if (!isPlainObject(raw.alternative)) {
+    return fail("alternative must be an object.");
+  }
+  if (!isAction(raw.alternative.action)) {
+    return fail(
+      `Alternative action ${JSON.stringify(raw.alternative.action)} is outside the permitted set.`,
     );
   }
-
-  const seatCount = candidate.seatCount;
-  if (action === "RENEW_REDUCED_SEATS") {
-    if (
-      typeof seatCount !== "number" ||
-      !Number.isInteger(seatCount) ||
-      seatCount <= 0
-    ) {
-      return refuse(
-        context,
-        `A seat reduction requires a positive integer seat count; got ${describe(seatCount)}.`,
-      );
-    }
-    if (bundle.seats && seatCount > bundle.seats.licensed) {
-      return refuse(
-        context,
-        `The proposed seat count ${seatCount} exceeds the ${bundle.seats.licensed} licensed seats.`,
-      );
-    }
-  } else if (
-    seatCount !== null &&
-    seatCount !== undefined &&
-    typeof seatCount !== "number"
-  ) {
-    return refuse(context, "The seat count was neither a number nor null.");
+  const reason = cleanString(raw.alternative.reason, MAX_REASON_CHARS);
+  if (!reason) {
+    return fail("alternative.reason must be a non-empty string.");
   }
 
-  if (!isNonEmptyString(candidate.rationale)) {
-    return refuse(context, "The proposal carried no rationale.");
-  }
-  if (!isNonEmptyString(candidate.rejectedAlternative)) {
-    return refuse(context, "The proposal named no rejected alternative.");
-  }
-
-  return {
-    ok: true,
-    proposal: {
-      proposalId: `proposal_${bundle.renewal.id}_${bundle.observedAt}`,
-      bundleId: bundle.bundleId,
-      renewalId: bundle.renewal.id,
-      proposedAt: bundle.observedAt,
-      action,
-      // Prose is bounded before it is stored. It reaches a rendered page, and
-      // an unbounded string from a model is an unbounded string on a page.
-      amount: movesMoney
-        ? { cents: amountCents as number, currency: bundle.renewal.amount.currency }
-        : null,
-      seatCount:
-        action === "RENEW_REDUCED_SEATS" ? (seatCount as number) : null,
-      rationale: truncate(candidate.rationale, 400),
-      rejectedAlternative: truncate(candidate.rejectedAlternative, 400),
-      producedBy: context.producedBy,
+  const proposal: Proposal = {
+    vendorId: evidence.vendorId,
+    renewalId: evidence.renewalId,
+    action: raw.action as Action,
+    amountCents: amount as Proposal["amountCents"],
+    currency: CURRENCY,
+    rationale,
+    alternative: {
+      action: raw.alternative.action as Action,
+      reason,
     },
   };
+
+  return { ok: true, proposal };
 }
+
+/** Parses then validates. Invalid JSON is MALFORMED like anything else. */
+export function parseAndValidate(
+  content: string,
+  evidence: EvidenceBundle,
+): ValidationResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return fail("Output was not valid JSON.");
+  }
+  return validateProposal(parsed, evidence);
+}
+
+/** Structured-output schema. Constrains shape at generation time. */
+export const PROPOSAL_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "vendorId",
+    "renewalId",
+    "action",
+    "amountCents",
+    "currency",
+    "rationale",
+    "alternative",
+  ],
+  properties: {
+    vendorId: { type: "string" },
+    renewalId: { type: "string" },
+    action: { type: "string", enum: [...ACTIONS] },
+    amountCents: { type: "integer" },
+    currency: { type: "string", enum: [CURRENCY] },
+    rationale: { type: "string" },
+    alternative: {
+      type: "object",
+      additionalProperties: false,
+      required: ["action", "reason"],
+      properties: {
+        action: { type: "string", enum: [...ACTIONS] },
+        reason: { type: "string" },
+      },
+    },
+  },
+};

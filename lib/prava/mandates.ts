@@ -1,209 +1,246 @@
-import { prisma } from "../db/client";
-import { getPravaAdapter } from "./index";
-import type { Mandate, MandateResult, PravaAdapter } from "./types";
+import { db } from "../db/client";
+import type { Cents, Frequency, MandateStatus } from "../contracts";
+import { centsToDecimal, isPravaConfigured, pravaRequest } from "./http";
+import { wallNow } from "../clock";
+import { paymentBoundary } from "./index";
 
 /**
- * Mandate lifecycle, through the single boundary.
+ * Mandate lifecycle — creation, mirroring, and status changes.
  *
- * Pause, resume, cancel, and read. Every one of these goes through the
- * adapter — there is no path in this file that writes a mandate status
- * directly to the database and calls it done. The local row is a mirror; the
- * network is the truth, and a mirror that disagrees with the truth is worse
- * than no mirror at all.
+ * Prava owns mandate truth. The `Mandate` table is a MIRROR, refreshed from the
+ * source on every tick, and it is never treated as authoritative. If the mirror
+ * and Prava disagree, Prava is right and the mirror is stale.
  *
- * That ordering is what makes the kill switch trustworthy: pausing writes to
- * Prava first, and the local row is updated from what Prava said, so a paused
- * mandate on our screen means a paused mandate on the network.
+ * Creating a mandate always goes through a passkey ceremony. There is no code
+ * path here that mints authority — only one that asks a human to.
  */
 
-export interface LifecycleResult {
+const FREQUENCY_MAP: Record<Frequency, string> = {
+  ONE_TIME: "one_time",
+  WEEKLY: "weekly",
+  MONTHLY: "monthly",
+  YEARLY: "yearly",
+};
+
+/**
+ * Real merchant domains, because this value is FORWARDED TO VISA.
+ *
+ * This is not cosmetic. Visa uses the merchant URL as part of the FIDO
+ * relying-party context when starting the passkey ceremony, and it rejects
+ * domains that are not real registrable names — returning a 400 that Prava
+ * surfaces as `FIDO_START_FAILED`.
+ *
+ * An earlier version generated `https://<vendor>.example` here. `.example` is
+ * RFC 2606's reserved TLD, which is the correct choice for documentation but
+ * the wrong one for a live payment network: it does not exist in the DNS root,
+ * so every ceremony failed before the browser was ever asked to prompt. The
+ * failure looked exactly like a broken authenticator, which sent debugging in
+ * entirely the wrong direction.
+ *
+ * The seeded vendors are real companies and their list pricing is real (see
+ * docs/disclosure.md), so using their real domains is also the more honest
+ * representation.
+ */
+const VENDOR_DOMAINS: Record<string, string> = {
+  Figma: "https://www.figma.com",
+  Linear: "https://linear.app",
+  Notion: "https://www.notion.so",
+  Datadog: "https://www.datadoghq.com",
+  Loom: "https://www.loom.com",
+  Airtable: "https://www.airtable.com",
+  Vercel: "https://vercel.com",
+};
+
+/** Falls back to a well-formed .com for vendors not in the map. */
+export function merchantUrlFor(vendorName: string): string {
+  const known = VENDOR_DOMAINS[vendorName];
+  if (known) return known;
+  const slug = vendorName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return `https://www.${slug}.com`;
+}
+
+export interface MandateSetupResult {
   ok: boolean;
-  mandate: Mandate | null;
-  error: string | null;
-}
-
-export async function pauseMandate(
-  pravaMandateId: string,
-  adapter: PravaAdapter = getPravaAdapter(),
-): Promise<LifecycleResult> {
-  return apply(adapter.pauseMandate(pravaMandateId), pravaMandateId, "PAUSED");
-}
-
-export async function resumeMandate(
-  pravaMandateId: string,
-  adapter: PravaAdapter = getPravaAdapter(),
-): Promise<LifecycleResult> {
-  return apply(adapter.resumeMandate(pravaMandateId), pravaMandateId, "ACTIVE");
-}
-
-export async function cancelMandate(
-  pravaMandateId: string,
-  adapter: PravaAdapter = getPravaAdapter(),
-): Promise<LifecycleResult> {
-  return apply(
-    adapter.cancelMandate(pravaMandateId),
-    pravaMandateId,
-    "CANCELLED",
-  );
+  sessionId?: string;
+  /** Where the owner goes to approve with a passkey. */
+  approvalUrl?: string;
+  expiresAt?: string;
+  error?: string;
+  /**
+   * True when no payment provider is configured at all — distinct from a
+   * provider that answered and refused.
+   *
+   * There is deliberately no mock ceremony behind this flag. A simulated
+   * passkey would be a fabricated security ceremony, and this product's whole
+   * claim is that authority requires a real human, a real device, and a real
+   * biometric. Faking that on stage would be the single most damaging thing
+   * in the repository if anyone looked closely.
+   *
+   * So the honest answer is the only answer: no provider, no ceremony, no new
+   * authority. Which is exactly the invariant the beat exists to show.
+   */
+  unavailable?: boolean;
 }
 
 /**
- * Apply a lifecycle transition and mirror the result.
+ * Opens a mandate-setup session.
  *
- * The local row is only written when the network confirmed the change. A
- * failed pause leaves the mirror showing ACTIVE, which is correct — the
- * mandate really is still active, and showing otherwise would be a lie that
- * makes an operator think they are safe when they are not.
+ * Returns a URL, not a mandate. The mandate does not exist until the owner
+ * approves it with a passkey on Prava's surface — this function cannot create
+ * authority, only request it.
+ *
+ * Note: recurring frequencies force `merchant_scope: "listed"`. Sending `any`
+ * with a recurring frequency is rejected by Prava, and rightly so — a standing
+ * authorization that works at any merchant is not a guardrail.
  */
-async function apply(
-  operation: Promise<MandateResult>,
-  pravaMandateId: string,
-  expected: Mandate["status"],
-): Promise<LifecycleResult> {
-  const result = await operation;
-
-  if (!result.ok || !result.mandate) {
-    return { ok: false, mandate: null, error: result.error ?? "unknown error" };
+export async function openMandateSetup(input: {
+  vendorName: string;
+  ownerId: string;
+  ownerEmail: string;
+  capCents: Cents;
+  frequency: Frequency;
+  validUntil: string;
+  maxCharges: number;
+}): Promise<MandateSetupResult> {
+  if (!isPravaConfigured()) {
+    return {
+      ok: false,
+      unavailable: true,
+      error: "No payment provider is configured, so no ceremony can be opened.",
+    };
   }
 
-  const state = await prisma.systemState.findUnique({
-    where: { id: "singleton" },
+  const response = await pravaRequest<{
+    session_id?: string;
+    iframe_url?: string;
+    expires_at?: string;
+    error?: string;
+  }>({
+    method: "POST",
+    path: "/v1/sessions",
+    body: {
+      user_id: input.ownerId,
+      user_email: input.ownerEmail,
+      total_amount: centsToDecimal(input.capCents),
+      currency: "USD",
+      integration_type: "full_checkout",
+      // Exactly one entry — Prava does not support multi-merchant sessions.
+      purchase_context: [
+        {
+          merchant_details: {
+            name: input.vendorName,
+            url: merchantUrlFor(input.vendorName),
+            country_code_iso2: "US",
+          },
+          product_details: [
+            {
+              description: `${input.vendorName} subscription`,
+              unit_price: centsToDecimal(input.capCents),
+              quantity: 1,
+            },
+          ],
+        },
+      ],
+      mandate_setup: {
+        intent: "mandate_setup",
+        recurring_frequency: FREQUENCY_MAP[input.frequency],
+        // Always locked to the named vendor, including for one-time mandates.
+        // `any` scope would let a standing authorization be spent anywhere,
+        // which is not a guardrail.
+        merchant_scope: "listed",
+        valid_until: input.validUntil,
+        max_charges: input.maxCharges,
+      },
+    },
   });
 
-  await prisma.mandate
-    .update({
-      where: { pravaMandateId },
-      data: {
-        status: result.mandate.status,
-        spentCents: result.mandate.spentCents,
-        amountCeilingCents: result.mandate.amountCeilingCents,
-        mirroredAt: state ? state.now : new Date(0),
-      },
-    })
-    .catch(() => {
-      // The network transition succeeded; a mirror write failure must not
-      // report the transition as failed. The next tick's refresh corrects it.
-    });
+  if (!response.ok || !response.body?.iframe_url) {
+    return {
+      ok: false,
+      error:
+        response.transportError ??
+        response.body?.error ??
+        `Mandate setup failed with status ${response.status}.`,
+    };
+  }
 
   return {
     ok: true,
-    mandate: result.mandate,
-    error:
-      result.mandate.status === expected
-        ? null
-        : `The network reports the mandate as ${result.mandate.status}.`,
+    sessionId: response.body.session_id,
+    approvalUrl: response.body.iframe_url,
+    expiresAt: response.body.expires_at,
   };
 }
 
+/** Refreshes one mirrored mandate from Prava. Silent no-op when absent. */
+export async function refreshMandate(vendorId: string): Promise<void> {
+  const local = await db.mandate.findUnique({ where: { vendorId } });
+  if (!local) return;
+
+  const snapshot = await paymentBoundary().getMandate(local.pravaMandateId);
+  if (!snapshot) return;
+
+  await db.mandate.update({
+    where: { vendorId },
+    data: {
+      status: snapshot.status,
+      capCents: snapshot.capCents,
+      remainingCents: snapshot.remainingCents,
+      expiresAt: snapshot.expiresAt ? new Date(snapshot.expiresAt) : null,
+      refreshedAt: wallNow(),
+    },
+  });
+}
+
 /**
- * Refresh every mirrored mandate from the network.
- *
- * Called at the top of each tick, before anything is adjudicated. Prava owns
- * mandate status and remaining authority; adjudicating against a stale local
- * copy would mean deciding on facts that were true some time ago.
- *
- * A failed refresh does not halt the tick. It is recorded and the tick
- * continues on the last known state — halting the whole system because one
- * mandate read timed out would trade a small inaccuracy for a total outage.
+ * Refreshes every mirrored mandate. Called at the start of each tick so
+ * decisions are made against current authority rather than yesterday's.
  */
-export interface RefreshSummary {
-  refreshed: number;
-  failed: number;
-  errors: string[];
+export async function refreshAllMandates(): Promise<number> {
+  const mandates = await db.mandate.findMany({ select: { vendorId: true } });
+  for (const mandate of mandates) {
+    await refreshMandate(mandate.vendorId);
+  }
+  return mandates.length;
 }
 
-export async function refreshMandateMirror(
-  adapter: PravaAdapter = getPravaAdapter(),
-): Promise<RefreshSummary> {
-  const rows = await prisma.mandate.findMany({
-    orderBy: { pravaMandateId: "asc" },
-    select: { pravaMandateId: true },
-  });
+async function transition(
+  vendorId: string,
+  action: "pause" | "resume" | "cancel",
+): Promise<{ ok: boolean; status?: MandateStatus; error?: string }> {
+  const local = await db.mandate.findUnique({ where: { vendorId } });
+  if (!local) return { ok: false, error: "No mandate for this vendor." };
 
-  const summary: RefreshSummary = { refreshed: 0, failed: 0, errors: [] };
-  const state = await prisma.systemState.findUnique({
-    where: { id: "singleton" },
-  });
-  const mirroredAt = state ? state.now : new Date(0);
+  const boundary = paymentBoundary();
+  const snapshot =
+    action === "pause"
+      ? await boundary.pauseMandate(local.pravaMandateId)
+      : action === "resume"
+        ? await boundary.resumeMandate(local.pravaMandateId)
+        : await boundary.cancelMandate(local.pravaMandateId);
 
-  for (const row of rows) {
-    const result = await adapter.getMandate(row.pravaMandateId);
-
-    if (!result.ok || !result.mandate) {
-      summary.failed += 1;
-      summary.errors.push(
-        `${row.pravaMandateId}: ${result.error ?? "unreadable"}`,
-      );
-      continue;
-    }
-
-    await prisma.mandate.update({
-      where: { pravaMandateId: row.pravaMandateId },
-      data: {
-        status: result.mandate.status,
-        amountCeilingCents: result.mandate.amountCeilingCents,
-        spentCents: result.mandate.spentCents,
-        expiresAt: result.mandate.expiresAt
-          ? new Date(result.mandate.expiresAt)
-          : null,
-        mirroredAt,
-      },
-    });
-    summary.refreshed += 1;
+  if (!snapshot) {
+    // Prava rejects illegal transitions with 409. The mirror is left untouched
+    // rather than optimistically updated — guessing would make it lie.
+    return { ok: false, error: `Could not ${action} this mandate.` };
   }
 
-  return summary;
-}
-
-/** Remaining authority, as a depleting quantity. Rendered on the authority page. */
-export interface MandateView {
-  pravaMandateId: string;
-  vendorId: string;
-  status: string;
-  authorizedCents: number;
-  spentCents: number;
-  remainingCents: number;
-  currency: string;
-  expiresAt: Date | null;
-  mirroredAt: Date;
-}
-
-export async function listMandateViews(): Promise<MandateView[]> {
-  const rows = await prisma.mandate.findMany({
-    orderBy: [{ vendorId: "asc" }, { pravaMandateId: "asc" }],
+  await db.mandate.update({
+    where: { vendorId },
+    data: {
+      status: snapshot.status,
+      remainingCents: snapshot.remainingCents,
+      refreshedAt: wallNow(),
+    },
   });
 
-  return rows.map((row) => ({
-    pravaMandateId: row.pravaMandateId,
-    vendorId: row.vendorId,
-    status: row.status,
-    authorizedCents: row.amountCeilingCents,
-    spentCents: row.spentCents,
-    remainingCents: Math.max(0, row.amountCeilingCents - row.spentCents),
-    currency: row.currency,
-    expiresAt: row.expiresAt,
-    mirroredAt: row.mirroredAt,
-  }));
+  return { ok: true, status: snapshot.status };
 }
 
-/** Pause every active mandate. The kill switch's payment-side action. */
-export async function pauseAllMandates(
-  adapter: PravaAdapter = getPravaAdapter(),
-): Promise<{ paused: string[]; failed: string[] }> {
-  const rows = await prisma.mandate.findMany({
-    where: { status: "ACTIVE" },
-    orderBy: { pravaMandateId: "asc" },
-    select: { pravaMandateId: true },
-  });
+export const pauseMandate = (vendorId: string) => transition(vendorId, "pause");
+export const resumeMandate = (vendorId: string) => transition(vendorId, "resume");
+export const cancelMandate = (vendorId: string) => transition(vendorId, "cancel");
 
-  const paused: string[] = [];
-  const failed: string[] = [];
-
-  for (const row of rows) {
-    const result = await pauseMandate(row.pravaMandateId, adapter);
-    if (result.ok) paused.push(row.pravaMandateId);
-    else failed.push(row.pravaMandateId);
-  }
-
-  return { paused, failed };
+export async function listMandates() {
+  return db.mandate.findMany({ orderBy: { refreshedAt: "desc" } });
 }

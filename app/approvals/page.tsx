@@ -1,244 +1,140 @@
-import { formatMoney } from "@/lib/contracts";
-import {
-  listHistoricalApprovals,
-  listPendingApprovals,
-} from "@/lib/approvals";
-import { requiresPasskeyCeremony } from "@/lib/approvals/ceiling";
-import { ApprovalActions } from "../components/ApprovalActions";
-import { DbError, Empty, Panel, PageHeader } from "../components/ui";
+import { listApprovals, expireStaleApprovals } from "@/lib/outcome/approvals";
+import { getClock } from "@/lib/clock";
+import { formatCents } from "@/lib/contracts/money";
+import type { Cents, EvidenceBundle, Proposal } from "@/lib/contracts";
+import { DbUnavailable, PageHeader } from "../_components/page-header";
+import { ApprovalActions } from "../_components/approval-actions";
 
 export const dynamic = "force-dynamic";
 
+const STATUS_STYLE: Record<string, string> = {
+  PENDING: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+  APPROVED: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+  REJECTED: "border-neutral-600 bg-neutral-800 text-neutral-300",
+  EXPIRED: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+};
+
 /**
- * Approvals — where a human meets the agent.
+ * Approvals — where human and agent meet.
  *
- * Each pending request shows the frozen snapshot it was raised against, not
- * current data. That is deliberate and it is the honest thing to show: consent
- * is being given to act on specific evidence, so the evidence a person is
- * looking at must be the evidence the decision will be made on. Refreshing it
- * live would mean approving one situation and charging in another.
+ * Each request carries the frozen snapshot it was raised under. The two types
+ * are visually distinct because they are not interchangeable: one is permission
+ * within existing authority, the other is a request for new authority that only
+ * a passkey can grant.
  */
 export default async function ApprovalsPage() {
-  let pending;
-  let history;
+  let approvals: Array<{
+    id: string;
+    type: string;
+    status: string;
+    vendorId: string;
+    amountCents: number;
+    ruleId: string;
+    expiresAt: Date;
+    passkeyAt: Date | null;
+    proposalSnapshot: unknown;
+    evidenceSnapshot: unknown;
+  }> = [];
+  let unavailable = false;
 
   try {
-    [pending, history] = await Promise.all([
-      listPendingApprovals(),
-      listHistoricalApprovals(25),
-    ]);
+    const clock = await getClock();
+    await expireStaleApprovals(clock);
+    approvals = (await listApprovals()) as typeof approvals;
   } catch {
-    return (
-      <>
-        <PageHeader title="Approvals" question="What needs a human?" />
-        <DbError />
-      </>
-    );
+    unavailable = true;
   }
 
-  const withCeremonyFlag = await Promise.all(
-    pending.map(async (approval) => ({
-      approval,
-      requiresPasskey: await requiresPasskeyCeremony(approval.id),
-    })),
-  );
+  const pending = approvals.filter((a) => a.status === "PENDING");
 
   return (
-    <>
+    <section>
       <PageHeader
         title="Approvals"
-        question="What is waiting for a human decision?"
+        question="Where the agent stopped and asked. Approving in this app satisfies policy — it never creates authority."
+        right={
+          unavailable ? null : (
+            <p className="text-xs text-neutral-500">{pending.length} pending</p>
+          )
+        }
       />
 
-      <Panel padded={false}>
-        <h2
-          style={{
-            fontSize: 12,
-            color: "var(--muted)",
-            padding: "16px 16px 10px",
-            margin: 0,
-          }}
-        >
-          PENDING
-        </h2>
+      {unavailable ? (
+        <DbUnavailable />
+      ) : approvals.length === 0 ? (
+        <p className="mt-6 text-sm text-neutral-500">
+          Nothing waiting on you.
+        </p>
+      ) : (
+        <ul className="mt-6 space-y-4">
+          {approvals.map((approval) => {
+            const proposal = approval.proposalSnapshot as Proposal | null;
+            const evidence = approval.evidenceSnapshot as EvidenceBundle | null;
+            const ceiling = approval.type === "CEILING_RAISE";
 
-        {withCeremonyFlag.length === 0 ? (
-          <Empty>Nothing is waiting on a human.</Empty>
-        ) : (
-          withCeremonyFlag.map(({ approval, requiresPasskey }) => (
-            <div
-              key={approval.id}
-              style={{
-                padding: "14px 16px",
-                borderTop: "1px solid var(--border)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  gap: 10,
-                  alignItems: "baseline",
-                  flexWrap: "wrap",
-                }}
+            return (
+              <li
+                key={approval.id}
+                className="rounded border border-neutral-800 p-4"
               >
-                <strong style={{ fontSize: 14 }}>
-                  {approval.evidence.vendor.name}
-                </strong>
-                <span className="mono" style={{ fontSize: 13 }}>
-                  {formatMoney({
-                    cents: approval.amountCents,
-                    currency: "USD",
-                  })}
-                </span>
-                <span
-                  className="mono"
-                  style={{
-                    fontSize: 11,
-                    color: requiresPasskey ? "var(--escalate)" : "var(--muted)",
-                    border: `1px solid ${requiresPasskey ? "var(--escalate)" : "var(--border)"}`,
-                    borderRadius: 3,
-                    padding: "1px 6px",
-                  }}
-                >
-                  {requiresPasskey ? "CEILING RAISE" : "POLICY EXCEPTION"}
-                </span>
-                <span
-                  className="mono"
-                  style={{
-                    marginLeft: "auto",
-                    fontSize: 11,
-                    color: approval.expired
-                      ? "var(--deny)"
-                      : approval.hoursRemaining <= 4
-                        ? "var(--escalate)"
-                        : "var(--muted)",
-                  }}
-                >
-                  {approval.expired
-                    ? "expired"
-                    : `expires in ${approval.hoursRemaining}h`}
-                </span>
-              </div>
-
-              <p style={{ margin: "8px 0 0", fontSize: 13 }}>
-                {approval.verdict.citedRuleDescription}
-              </p>
-
-              {approval.verdict.citedSourceFragment ? (
-                <blockquote
-                  style={{
-                    margin: "6px 0 0",
-                    paddingLeft: 10,
-                    borderLeft: "2px solid var(--border)",
-                    fontSize: 13,
-                    fontStyle: "italic",
-                    color: "var(--muted)",
-                  }}
-                >
-                  “{approval.verdict.citedSourceFragment}”
-                </blockquote>
-              ) : null}
-
-              {/* The frozen snapshot. Not refreshed. */}
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: 10,
-                  background: "var(--panel-2)",
-                  borderRadius: 4,
-                  fontSize: 12,
-                }}
-              >
-                <div style={{ color: "var(--muted)", marginBottom: 4 }}>
-                  EVIDENCE AS IT STOOD WHEN THIS WAS RAISED — frozen, not live
-                </div>
-                <span className="mono">
-                  {approval.evidence.seats
-                    ? `${approval.evidence.seats.active} of ${approval.evidence.seats.licensed} seats active`
-                    : "no usage data"}
-                </span>
-                {approval.evidence.priceChange ? (
-                  <span className="mono" style={{ marginLeft: 12 }}>
-                    {(
-                      approval.evidence.priceChange.deltaBasisPoints / 100
-                    ).toFixed(1)}
-                    % price change
-                  </span>
-                ) : null}
-                {approval.evidence.gaps.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2">
                   <span
-                    className="mono"
-                    style={{ marginLeft: 12, color: "var(--escalate)" }}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                      STATUS_STYLE[approval.status] ?? "border-neutral-700"
+                    }`}
                   >
-                    gaps: {approval.evidence.gaps.join(", ")}
+                    {approval.status.toLowerCase()}
                   </span>
+                  <span className="text-sm text-neutral-100">
+                    {evidence?.vendorName ?? approval.vendorId}
+                  </span>
+                  <span className="text-sm text-neutral-400">
+                    {formatCents(approval.amountCents as Cents)}
+                  </span>
+                  {ceiling ? (
+                    <span className="rounded border border-amber-500/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
+                      needs passkey
+                    </span>
+                  ) : null}
+                </div>
+
+                {proposal ? (
+                  <div className="mt-3 rounded border border-dashed border-neutral-700 p-2.5">
+                    <p className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
+                      agent&apos;s stated reasoning — model output
+                    </p>
+                    <p className="text-xs text-neutral-300">
+                      {proposal.rationale}
+                    </p>
+                  </div>
                 ) : null}
-              </div>
 
-              <ApprovalActions
-                approvalId={approval.id}
-                requiresPasskey={requiresPasskey}
-                amountCents={approval.amountCents}
-                expired={approval.expired}
-              />
-            </div>
-          ))
-        )}
-      </Panel>
+                <p className="mt-3 text-xs text-neutral-500">
+                  {ceiling
+                    ? "Exceeds the mandate ceiling. Approving here records intent; the ceiling moves only after a passkey ceremony."
+                    : "Within existing mandate authority. Approving permits this one charge."}
+                </p>
 
-      {history.length > 0 ? (
-        <Panel padded={false}>
-          <h2
-            style={{
-              fontSize: 12,
-              color: "var(--muted)",
-              padding: "16px 16px 10px",
-              margin: 0,
-            }}
-          >
-            RESOLVED
-          </h2>
-          {history.map((row) => (
-            <div
-              key={row.id}
-              style={{
-                padding: "10px 16px",
-                borderTop: "1px solid var(--border)",
-                display: "flex",
-                gap: 12,
-                alignItems: "baseline",
-                fontSize: 13,
-                flexWrap: "wrap",
-              }}
-            >
-              <span>{row.vendorId}</span>
-              <span className="mono">
-                {formatMoney({ cents: row.amountCents, currency: "USD" })}
-              </span>
-              <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
-                {row.status}
-              </span>
-              {row.grantedMandateId ? (
-                <span
-                  className="mono"
-                  style={{ fontSize: 11, color: "var(--muted)" }}
-                >
-                  new mandate {row.grantedMandateId}
-                </span>
-              ) : null}
-              <span
-                style={{
-                  marginLeft: "auto",
-                  color: "var(--muted)",
-                  fontSize: 12,
-                }}
-              >
-                {row.resolvedBy ?? "—"}
-              </span>
-            </div>
-          ))}
-        </Panel>
-      ) : null}
-    </>
+                <p className="mt-1 text-xs text-neutral-600">
+                  expires {approval.expiresAt.toISOString().slice(0, 16)}Z
+                  {approval.passkeyAt
+                    ? ` · passkey ${approval.passkeyAt.toISOString().slice(0, 16)}Z`
+                    : ""}
+                </p>
+
+                {approval.status === "PENDING" ? (
+                  <div className="mt-3">
+                    <ApprovalActions
+                      id={approval.id}
+                      type={approval.type as "POLICY_EXCEPTION" | "CEILING_RAISE"}
+                    />
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }

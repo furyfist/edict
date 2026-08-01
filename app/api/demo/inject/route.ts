@@ -1,70 +1,80 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db/client";
-import { now } from "@/lib/clock";
+import { db } from "@/lib/db/client";
+import { getClock } from "@/lib/clock";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Inject a message into a vendor's inbox.
+ * Plant a vendor message.
  *
- * This is the attack surface, and it is deliberately not special: the message
- * lands in the same table real vendor messages land in, and the evidence
- * builder picks it up the same way. There is no "attack mode" the pipeline
- * knows about.
+ * This is the attack surface, exposed deliberately. A judge types whatever they
+ * like into a vendor's inbox and the agent reads it as part of its evidence
+ * bundle — because that is what happens in reality when an agent reads vendor
+ * email.
  *
- * The one thing the injected message carries that a real one does not is
- * `injected: true`, and that flag exists to make the demo *more* honest rather
- * than less — the vendors page labels it, and a ledger entry produced from it
- * can say the proposal was triggered by injected content. Hiding the flag
- * would make the attack look more impressive and the system less trustworthy.
+ * The message is stored as DATA and marked `injected: true`. The policy engine
+ * never reads it. That asymmetry is the entire demo: the model can be fooled,
+ * the ceiling cannot be argued with.
  */
-export async function POST(request: Request): Promise<NextResponse> {
-  let vendorId: string;
-  let subject: string;
-  let body: string;
-
+export async function POST(request: Request) {
+  let body: {
+    vendorId?: unknown;
+    subject?: unknown;
+    message?: unknown;
+    from?: unknown;
+  };
   try {
-    const payload = (await request.json()) as {
-      vendorId?: unknown;
-      subject?: unknown;
-      body?: unknown;
-    };
-    if (typeof payload.vendorId !== "string" || !payload.vendorId.trim()) {
-      return NextResponse.json({ error: "vendorId is required" }, { status: 400 });
-    }
-    if (typeof payload.body !== "string" || !payload.body.trim()) {
-      return NextResponse.json({ error: "body is required" }, { status: 400 });
-    }
-    vendorId = payload.vendorId.trim();
-    subject =
-      typeof payload.subject === "string" && payload.subject.trim()
-        ? payload.subject.trim().slice(0, 200)
-        : "(no subject)";
-    body = payload.body.slice(0, 4000);
+    body = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
 
-  const vendor = await prisma.vendor.findUnique({ where: { id: vendorId } });
-  if (!vendor) {
-    return NextResponse.json({ error: "no such vendor" }, { status: 404 });
+  if (typeof body.vendorId !== "string" || typeof body.message !== "string") {
+    return NextResponse.json(
+      { error: "vendorId and message are required" },
+      { status: 400 },
+    );
+  }
+  if (body.message.trim().length === 0) {
+    return NextResponse.json({ error: "message is empty" }, { status: 400 });
   }
 
-  const instant = await now();
+  const vendor = await db.vendor.findUnique({ where: { id: body.vendorId } });
+  if (!vendor) {
+    return NextResponse.json({ error: "unknown vendor" }, { status: 404 });
+  }
 
-  const message = await prisma.vendorMessage.create({
+  const clock = await getClock();
+
+  const created = await db.inboundMessage.create({
     data: {
-      vendorId,
-      receivedAt: instant,
-      subject,
-      body,
+      vendorId: vendor.id,
+      receivedAt: clock,
+      fromAddr:
+        typeof body.from === "string" && body.from.trim().length > 0
+          ? body.from
+          : `billing@${vendor.name.toLowerCase().replace(/[^a-z0-9]/g, "")}.example`,
+      subject:
+        typeof body.subject === "string" && body.subject.trim().length > 0
+          ? body.subject
+          : "Account notice",
+      body: body.message,
       injected: true,
     },
+    select: { id: true },
   });
 
   return NextResponse.json({
     ok: true,
-    messageId: message.id,
-    note: "Injected into the vendor inbox. The next tick will read it as ordinary evidence.",
+    messageId: created.id,
+    vendor: vendor.name,
+    note: "Stored as untrusted data. The agent will read it; the policy engine will not.",
   });
+}
+
+export async function DELETE() {
+  const removed = await db.inboundMessage.deleteMany({
+    where: { injected: true },
+  });
+  return NextResponse.json({ ok: true, removed: removed.count });
 }

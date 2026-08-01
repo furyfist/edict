@@ -1,161 +1,131 @@
-/**
- * The one configured entry point to the language model.
- *
- * Both model surfaces — the agent proposer and the policy compiler — go
- * through this client. One entry point means one place where the timeout, the
- * determinism settings, and the failure taxonomy are decided, rather than two
- * call sites that drift apart.
- *
- * Every failure is a typed value. Nothing here throws for an unreachable model
- * or a slow one: an unreachable model is an ordinary outcome that the pipeline
- * adjudicates like any other, and a thrown exception at this boundary would
- * turn that into a crash.
- *
- * This module imports only `lib/contracts`. It is inside `lib/agent`, and
- * `lib/agent` has no path to money.
- */
-
-const DEFAULT_MODEL = "claude-opus-5";
-
-/** Bounded. A model that has not answered by now is treated as unreachable. */
-const TIMEOUT_MS = 20_000;
+import OpenAI from "openai";
 
 /**
- * Determinism. Claude Opus 5 rejects `temperature`, `top_p`, and `top_k`
- * outright, so determinism is requested through `effort` and through prompts
- * that leave little room for variance rather than through a sampling knob.
+ * The single configured entry point to the language model.
  *
- * This is worth being clear about: the model is not deterministic and the
- * system does not depend on it being deterministic. Determinism lives in the
- * policy engine, which is a pure function. The model only proposes.
+ * Both LLM surfaces — the proposer and the policy compiler — go through here so
+ * that temperature, timeout, and model selection are decided in one place
+ * rather than at each call site.
+ *
+ * Temperature is fixed at 0 IN CODE, not in configuration. A model that reasons
+ * about money should not become more creative because someone edited an
+ * environment variable.
  */
-const EFFORT = "low" as const;
 
-export const LLM_FAILURES = ["MODEL_UNREACHABLE", "MODEL_TIMEOUT"] as const;
-export type LlmFailureReason = (typeof LLM_FAILURES)[number];
+const DEFAULT_MODEL = "gpt-4o";
+const TIMEOUT_MS = 30_000;
+const MAX_RETRIES = 0; // Retries are the caller's decision, never the SDK's.
+
+export const TEMPERATURE = 0;
+
+/**
+ * Optional base-URL override, so any OpenAI-compatible provider works without
+ * touching the agent or the compiler — both call through this one module.
+ *
+ * Set OPENAI_BASE_URL to e.g. https://api.groq.com/openai/v1 and point
+ * OPENAI_MODEL at a model that provider serves. The provider that is actually
+ * live is recorded on every ledger entry via `decidedBy.modelId`, so a swap is
+ * never invisible in the record.
+ */
+export function baseUrl(): string | undefined {
+  return process.env.OPENAI_BASE_URL || undefined;
+}
+
+export type LlmFailure =
+  | { kind: "UNAVAILABLE"; message: string }
+  | { kind: "MALFORMED"; message: string };
 
 export type LlmResult =
-  | { ok: true; text: string; model: string }
-  | { ok: false; reason: LlmFailureReason; detail: string };
+  | { ok: true; content: string }
+  | { ok: false; failure: LlmFailure };
 
-export interface LlmRequest {
-  system: string;
-  prompt: string;
-  maxTokens?: number;
-  /**
-   * JSON Schema the response must conform to. When present the model is asked
-   * for structured output, which removes a whole class of parse failures — but
-   * the validator downstream still runs. Structured output makes malformed
-   * responses rarer; it does not make them impossible, and the boundary that
-   * turns a bad response into a refusal is not allowed to depend on a
-   * provider feature working perfectly.
-   */
-  schema?: Record<string, unknown>;
+let client: OpenAI | null = null;
+
+export function modelId(): string {
+  return process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
 }
 
-export function isModelConfigured(): boolean {
-  return (
-    process.env.AGENT_MODE === "live" && Boolean(process.env.ANTHROPIC_API_KEY)
-  );
+export function isConfigured(): boolean {
+  return Boolean(process.env.OPENAI_API_KEY);
+}
+
+function getClient(): OpenAI {
+  if (!client) {
+    client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+      baseURL: baseUrl(),
+      timeout: TIMEOUT_MS,
+      maxRetries: MAX_RETRIES,
+    });
+  }
+  return client;
 }
 
 /**
- * Call the model. Returns text or a typed failure — never throws.
+ * One completion, returned as raw text.
  *
- * The request is issued over plain fetch rather than through an SDK. The
- * payload is small, the response shape is stable, and one fewer dependency in
- * the module that talks to the model is worth more here than the ergonomics.
+ * `jsonSchema` uses structured outputs so the model is constrained to the shape
+ * at generation time. That does not remove the need for validation on receipt —
+ * the schema constrains structure, not meaning, and a well-formed proposal for
+ * the wrong vendor is still something we refuse.
  */
-export async function complete(request: LlmRequest): Promise<LlmResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  const model = process.env.AGENT_MODEL || DEFAULT_MODEL;
-
-  if (!apiKey) {
+export async function complete(input: {
+  system: string;
+  user: string;
+  schemaName: string;
+  jsonSchema: Record<string, unknown>;
+}): Promise<LlmResult> {
+  if (!isConfigured()) {
     return {
       ok: false,
-      reason: "MODEL_UNREACHABLE",
-      detail: "No ANTHROPIC_API_KEY is configured.",
+      failure: {
+        kind: "UNAVAILABLE",
+        message: "OPENAI_API_KEY is not set.",
+      },
     };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
   try {
-    const body: Record<string, unknown> = {
-      model,
-      max_tokens: request.maxTokens ?? 1024,
-      system: request.system,
-      output_config: { effort: EFFORT },
-      messages: [{ role: "user", content: request.prompt }],
-    };
-
-    if (request.schema) {
-      (body.output_config as Record<string, unknown>).format = {
+    const response = await getClient().chat.completions.create({
+      model: modelId(),
+      temperature: TEMPERATURE,
+      messages: [
+        { role: "system", content: input.system },
+        { role: "user", content: input.user },
+      ],
+      response_format: {
         type: "json_schema",
-        schema: request.schema,
-      };
-    }
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        json_schema: {
+          name: input.schemaName,
+          strict: true,
+          schema: input.jsonSchema,
+        },
       },
-      body: JSON.stringify(body),
-      signal: controller.signal,
     });
 
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
       return {
         ok: false,
-        reason: "MODEL_UNREACHABLE",
-        detail: truncate(`HTTP ${response.status}: ${detail}`),
+        failure: { kind: "MALFORMED", message: "Model returned no content." },
       };
     }
 
-    const payload = (await response.json()) as {
-      content?: { type: string; text?: string }[];
-      stop_reason?: string;
-    };
-
-    // A refusal is not a crash. It produces no usable proposal, which the
-    // validator downstream turns into an escalation.
-    if (payload.stop_reason === "refusal") {
-      return {
-        ok: false,
-        reason: "MODEL_UNREACHABLE",
-        detail: "The model declined to answer.",
-      };
-    }
-
-    const text = (payload.content ?? [])
-      .filter((block) => block.type === "text")
-      .map((block) => block.text ?? "")
-      .join("");
-
-    return { ok: true, text, model };
+    return { ok: true, content };
   } catch (error) {
-    const aborted =
-      error instanceof Error &&
-      (error.name === "AbortError" || error.name === "TimeoutError");
+    // Unreachable, timed out, rate limited, or refused. All are UNAVAILABLE:
+    // the caller halts rather than proceeding on a partial picture.
     return {
       ok: false,
-      reason: aborted ? "MODEL_TIMEOUT" : "MODEL_UNREACHABLE",
-      detail: truncate(error instanceof Error ? error.message : String(error)),
+      failure: {
+        kind: "UNAVAILABLE",
+        message: error instanceof Error ? error.message : String(error),
+      },
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
-/** Model output reaches the ledger. It is bounded and escaped before it does. */
-export function truncate(value: string, limit = 300): string {
-  const flattened = value.replace(/\s+/g, " ").trim();
-  return flattened.length <= limit
-    ? flattened
-    : `${flattened.slice(0, limit)}…`;
+/** Test seam. */
+export function __resetClient() {
+  client = null;
 }

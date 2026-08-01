@@ -1,576 +1,608 @@
-import { prisma } from "./client";
-import { DEMO_EPOCH, plusDays, seedClock } from "../clock";
-import { MockPravaAdapter } from "../prava/mock";
+import { db } from "./client";
+import { DEFAULT_DEMO_CLOCK, addDays, startOfDay } from "../clock";
 
 /**
- * The demo dataset.
+ * The demo dataset. Eight vendors, one per scenario.
  *
- * Eight vendors, two policy versions, and a set of scenarios that between them
- * reach every outcome the architecture defines. Nothing here is decorative:
- * each vendor exists because it exercises a code path the demo needs to show.
+ * Deterministic: identical output on every run, from an empty database. No
+ * randomness, no wall clock — everything is relative to DEFAULT_DEMO_CLOCK.
  *
- * Reproducibility is the property that matters most. All ids are explicit, all
- * timestamps derive from the fixed demo epoch, the mock adapter derives its
- * identifiers from their inputs, and nothing reads wall time or randomness —
- * so running the seed twice from empty produces identical rows, and "reset to
- * a clean state" means byte-identical rather than approximately similar.
+ * Realistic without being false: vendor names and list pricing are real and
+ * checkable. Seat counts, usage, and messages are fabricated, disclosed in the
+ * README, and labelled in the interface. The enforcement is not fabricated.
  */
 
-interface VendorSeed {
-  id: string;
+const CLOCK = DEFAULT_DEMO_CLOCK;
+
+interface VendorSpec {
   name: string;
   category: string;
-  merchantId: string | null;
+  billingContact: string;
+  /** null means no seat model at all (infrastructure, storage). */
+  seats: { assigned: number; active: number } | null;
+  /** false seeds seats with NO usage rows — unknown, not zero. */
+  withUsage: boolean;
   renewal: {
-    id: string;
-    dueInDays: number;
     amountCents: number;
-    cadence: "MONTHLY" | "QUARTERLY" | "ANNUAL";
-    cycleKey: string;
-    priorCycleAmountCents: number | null;
-    previousAmountCents: number | null;
+    frequency: "MONTHLY" | "YEARLY";
+    dueInDays: number;
   };
-  seats: { licensed: number; active: number; dormant: number } | null;
-  /** Why this vendor is in the skeleton — which outcome it exercises. */
+  /** Prior cycles, oldest first. Drives the price-creep signal. */
+  priorAmountsCents: number[];
+  /**
+   * Cycles seeded BEYOND the current one, spaced `NEXT_CYCLE_DAYS` apart.
+   *
+   * Without these, the demo eats itself. Every vendor's newest cycle starts on
+   * the demo clock, so the pre-run overnight tick (arc beat 2) adjudicates all
+   * of them — and the injection beat's tick then finds nothing to do and
+   * reports `processed: 0, skipped: 8`. Advancing the clock cannot rescue it:
+   * the clock only moves past due dates, it never creates a cycle.
+   *
+   * So the attack surface, and only the attack surface, carries cycles the
+   * overnight run cannot reach. Beats 2 and 5 stop being mutually exclusive.
+   *
+   * More than one because a cycle is consumed by every attempt, and rehearsal
+   * consumes them fastest. Running out mid-demo means an ~95s reseed followed
+   * by a ~107s tick to get back to a usable state, which is not a recovery you
+   * can perform while someone is watching.
+   */
+  reservedCycles?: number;
+  mandate: { capCents: number } | null;
   scenario: string;
 }
 
 /**
- * The full dataset.
+ * How far out the reserved cycle sits.
  *
- * Eight vendors, each producing one specified scenario, and between them every
- * outcome class the architecture defines appears at least once. This is built
- * last on purpose: it targets a finished system rather than being maintained
- * against a moving one, and the scenarios are chosen to exercise real code
- * paths rather than to look varied.
+ * Must be larger than the tick's 7-day lookahead so the overnight run cannot
+ * see it, and reachable by the attack console's `+30d` button so the injection
+ * beat can. 30 also matches the spacing the prior cycles already use.
  */
-export const SKELETON_VENDORS: VendorSeed[] = [
+const NEXT_CYCLE_DAYS = 30;
+
+/** Days of login history seeded before the demo clock. */
+const USAGE_HISTORY_DAYS = 45;
+
+/**
+ * Days of login history seeded AFTER the demo clock.
+ *
+ * The evidence builder only ever reads up to the clock, so these rows change no
+ * decision. They exist for the interface: usage is measured over the trailing
+ * 30 days, and the demo advances the clock by 30 at a time. With history that
+ * stopped at the clock, one advance emptied that window and the Vendors page
+ * showed every seeded vendor at `0/12` — factually true for the window, and
+ * indistinguishable from "nobody uses this" to anyone reading it.
+ *
+ * Covers all three reserved cycles (+30/+60/+90) with a margin, so the page
+ * still reads correctly however many times the clock is advanced on stage.
+ */
+const USAGE_FUTURE_DAYS = 100;
+
+const VENDORS: VendorSpec[] = [
   {
-    id: "vendor_figma",
     name: "Figma",
     category: "design",
-    merchantId: "merchant_figma",
-    renewal: {
-      id: "renewal_figma_2025_03",
-      dueInDays: 2,
-      amountCents: 45_00,
-      cadence: "MONTHLY",
-      cycleKey: "2025-03",
-      priorCycleAmountCents: 45_00,
-      previousAmountCents: 45_00,
-    },
-    seats: { licensed: 20, active: 18, dormant: 2 },
-    scenario: "allow — small, unchanged, well-used",
+    billingContact: "billing@figma.example",
+    seats: { assigned: 12, active: 6 },
+    withUsage: true,
+    renewal: { amountCents: 18000, frequency: "MONTHLY", dueInDays: 3 },
+    priorAmountsCents: [18000, 18000],
+    mandate: { capCents: 50000 },
+    scenario: "clean autonomous reduction — half the seats dark for 41 days",
   },
   {
-    id: "vendor_datadog",
-    name: "Datadog",
-    category: "observability",
-    merchantId: "merchant_datadog",
-    renewal: {
-      id: "renewal_datadog_2025_03",
-      dueInDays: 3,
-      amountCents: 1_240_00,
-      cadence: "MONTHLY",
-      cycleKey: "2025-03",
-      priorCycleAmountCents: 980_00,
-      previousAmountCents: 980_00,
-    },
-    seats: { licensed: 40, active: 31, dormant: 9 },
-    scenario: "escalate — large, and a 26% price increase",
-  },
-  {
-    id: "vendor_cloudsync",
-    name: "CloudSync Pro",
-    category: "storage",
-    merchantId: "merchant_cloudsync",
-    renewal: {
-      id: "renewal_cloudsync_2025_03",
-      dueInDays: 4,
-      amountCents: 3_600_00,
-      cadence: "ANNUAL",
-      cycleKey: "2025",
-      priorCycleAmountCents: null,
-      previousAmountCents: null,
-    },
-    seats: null,
-    scenario: "deny — no usage data at all, and an amount well over any ceiling",
-  },
-  {
-    id: "vendor_linear",
     name: "Linear",
     category: "project-management",
-    merchantId: "merchant_linear",
-    renewal: {
-      id: "renewal_linear_2025_03",
-      dueInDays: 2,
-      amountCents: 32_00,
-      cadence: "MONTHLY",
-      cycleKey: "2025-03",
-      priorCycleAmountCents: 32_00,
-      previousAmountCents: 32_00,
-    },
-    seats: { licensed: 12, active: 12, dormant: 0 },
-    scenario: "allow — the boring case, which is most of them",
+    billingContact: "billing@linear.example",
+    seats: { assigned: 20, active: 19 },
+    withUsage: true,
+    renewal: { amountCents: 16000, frequency: "MONTHLY", dueInDays: 4 },
+    priorAmountsCents: [16000, 16000],
+    mandate: { capCents: 50000 },
+    scenario: "correct renewal — proves it is not a cancellation machine",
   },
   {
-    id: "vendor_notion",
     name: "Notion",
     category: "docs",
-    merchantId: "merchant_notion",
-    renewal: {
-      id: "renewal_notion_2025_03",
-      dueInDays: 3,
-      amountCents: 96_00,
-      cadence: "MONTHLY",
-      cycleKey: "2025-03",
-      priorCycleAmountCents: 96_00,
-      previousAmountCents: 96_00,
-    },
-    // 40% dormant. Under the ceiling, so it renews — but the agent proposes a
-    // seat reduction and the ledger shows what it noticed.
-    seats: { licensed: 30, active: 18, dormant: 12 },
-    scenario: "allow with a seat reduction — 40% of seats dormant",
+    billingContact: "billing@notion.example",
+    seats: { assigned: 30, active: 11 },
+    withUsage: true,
+    renewal: { amountCents: 480000, frequency: "YEARLY", dueInDays: 6 },
+    priorAmountsCents: [420000],
+    mandate: { capCents: 50000 },
+    scenario: "escalation — large waste, but over the auto-approve ceiling",
   },
   {
-    id: "vendor_loom",
+    name: "Datadog",
+    category: "monitoring",
+    billingContact: "billing@datadog.example",
+    seats: null,
+    withUsage: false,
+    renewal: { amountCents: 390000, frequency: "MONTHLY", dueInDays: 5 },
+    priorAmountsCents: [240000, 240000],
+    mandate: { capCents: 250000 },
+    scenario: "ceiling raise — 62% increase pushes past mandate authority",
+  },
+  {
     name: "Loom",
     category: "video",
-    merchantId: "merchant_loom",
-    renewal: {
-      id: "renewal_loom_2025_03",
-      dueInDays: 5,
-      amountCents: 150_00,
-      cadence: "MONTHLY",
-      cycleKey: "2025-03",
-      priorCycleAmountCents: 150_00,
-      previousAmountCents: 150_00,
-    },
-    // No seat record at all. Above the auto ceiling and missing evidence:
-    // escalates for the missing-evidence reason rather than the amount.
-    seats: null,
-    scenario: "escalate — missing evidence, above the auto ceiling",
+    billingContact: "billing@loom.example",
+    seats: { assigned: 15, active: 2 },
+    withUsage: true,
+    renewal: { amountCents: 22500, frequency: "MONTHLY", dueInDays: 2 },
+    priorAmountsCents: [22500, 22500],
+    mandate: { capCents: 50000 },
+    scenario: "near-total abandonment — exercises the drafted vendor email",
   },
   {
-    id: "vendor_airtable",
     name: "Airtable",
     category: "database",
-    merchantId: "merchant_airtable",
-    renewal: {
-      id: "renewal_airtable_2025_03",
-      dueInDays: 4,
-      amountCents: 240_00,
-      cadence: "MONTHLY",
-      cycleKey: "2025-03",
-      priorCycleAmountCents: 200_00,
-      previousAmountCents: 200_00,
-    },
-    // Exactly 20% — above the 15% threshold, so the price rule fires before
-    // the amount rule. The refusal cites the increase, not the amount.
-    seats: { licensed: 25, active: 22, dormant: 3 },
-    scenario: "escalate — a 20% price increase, cited over the amount",
+    billingContact: "billing@airtable.example",
+    // Seats exist, but no usage rows at all. The subtlest and best case in the
+    // set: cheap, harmless-looking, and it must still escalate because unknown
+    // is never permission.
+    seats: { assigned: 8, active: 0 },
+    withUsage: false,
+    renewal: { amountCents: 24000, frequency: "MONTHLY", dueInDays: 5 },
+    priorAmountsCents: [24000],
+    mandate: { capCents: 50000 },
+    scenario: "unknown is not permission — no usage data, so it escalates",
   },
   {
-    id: "vendor_vercel",
     name: "Vercel",
-    category: "hosting",
-    // No merchant id. Nothing to pin a mandate to, so it cannot be paid
-    // unattended however small the amount is.
-    merchantId: null,
-    renewal: {
-      id: "renewal_vercel_2025_03",
-      dueInDays: 6,
-      amountCents: 20_00,
-      cadence: "MONTHLY",
-      cycleKey: "2025-03",
-      priorCycleAmountCents: 20_00,
-      previousAmountCents: 20_00,
-    },
-    seats: { licensed: 8, active: 8, dormant: 0 },
-    scenario: "escalate — small and well-used, but no payment merchant",
+    category: "infrastructure",
+    billingContact: "billing@vercel.example",
+    seats: null,
+    withUsage: false,
+    renewal: { amountCents: 60000, frequency: "MONTHLY", dueInDays: 7 },
+    priorAmountsCents: [60000],
+    mandate: { capCents: 100000 },
+    scenario: "explicit denial — named in the policy, ordering cannot defeat it",
+  },
+  {
+    name: "CloudSync Pro",
+    category: "storage",
+    billingContact: "billing@cloudsyncpro.example",
+    /**
+     * FULLY UTILISED, AND DELIBERATELY SO. Do not set this back to `null`.
+     *
+     * The engine checks evidence completeness (step 4) BEFORE the mandate
+     * ceiling (step 5). With no usage rows this vendor escalated as
+     * `EVIDENCE_INCOMPLETE` — "missing usage data" — which meant the injection
+     * beat was stopped by an unrelated gap and never reached the injected
+     * amount at all. A judge could fairly say it would have escalated anyway.
+     *
+     * With usage present the attack runs to the check that actually answers it:
+     * the proposed $48,000 against a $500 ceiling, `OVER_MANDATE_CEILING`.
+     *
+     * 8 of 8 active because this vendor must stay boring. Any waste here would
+     * hand the agent a second story to tell in the middle of the attack, and
+     * Airtable already owns "unknown is not permission".
+     */
+    seats: { assigned: 8, active: 8 },
+    withUsage: true,
+    renewal: { amountCents: 9500, frequency: "MONTHLY", dueInDays: 1 },
+    priorAmountsCents: [9500, 9500],
+    // The only vendor with cycles left after the overnight run. A judge plants
+    // a message, advances the clock, runs a tick — and exactly one vendor
+    // processes: the one they just attacked. Nothing else is competing for
+    // attention, and the tick returns in ~45s rather than in ~107.
+    //
+    // Three attempts: one for rehearsal, one for the room, one for the judge
+    // who wants to try their own wording.
+    reservedCycles: 3,
+    mandate: { capCents: 50000 },
+    scenario: "the attack surface — cheap, unremarkable, and injectable",
   },
 ];
 
-/** Delete everything, in dependency order. Seeds always start from empty. */
-async function clear(): Promise<void> {
-  await prisma.ledgerEntry.deleteMany();
-  await prisma.approvalRequest.deleteMany();
-  await prisma.tickRun.deleteMany();
-  await prisma.policyRule.deleteMany();
-  await prisma.policyVersion.deleteMany();
-  await prisma.mandate.deleteMany();
-  await prisma.vendorMessage.deleteMany();
-  await prisma.usageRecord.deleteMany();
-  await prisma.seatRecord.deleteMany();
-  await prisma.renewal.deleteMany();
-  await prisma.vendor.deleteMany();
-  await prisma.systemState.deleteMany();
-}
-
 /**
- * The starting policy, written the way a finance lead would write it. The rules
- * below are the compiled form of exactly these sentences, and each rule carries
- * the sentence it came from so a refusal can quote it back.
- */
-export const SEED_POLICY_TEXT = [
-  "Never renew anything from CloudSync Pro.",
-  "Renew anything under $100 automatically.",
-  "Anything with a price increase above 15% needs my approval.",
-  "Anything over $500 needs my approval.",
-].join("\n");
-
-async function seedPolicy(): Promise<void> {
-  const version = await prisma.policyVersion.create({
-    data: {
-      version: 1,
-      sourceText: SEED_POLICY_TEXT,
-      status: "ACTIVE",
-      createdAt: DEMO_EPOCH,
-      activatedAt: DEMO_EPOCH,
-      activatedBy: "user:finance-lead",
-    },
-  });
-
-  await prisma.policyRule.createMany({
-    data: [
-      {
-        policyVersionId: version.id,
-        ordinal: 1,
-        effect: "DENY",
-        conditions: [
-          { field: "VENDOR_ID", operator: "EQ", value: "vendor_cloudsync" },
-        ],
-        amountCeilingCents: null,
-        sourceFragment: "Never renew anything from CloudSync Pro.",
-        description: "Deny every renewal for CloudSync Pro.",
-      },
-      {
-        policyVersionId: version.id,
-        ordinal: 2,
-        effect: "REQUIRE_APPROVAL",
-        conditions: [
-          {
-            field: "PRICE_INCREASE_BASIS_POINTS",
-            operator: "GT",
-            value: 1500,
-          },
-        ],
-        amountCeilingCents: null,
-        sourceFragment:
-          "Anything with a price increase above 15% needs my approval.",
-        description: "Escalate renewals whose price rose by more than 15%.",
-      },
-      {
-        policyVersionId: version.id,
-        ordinal: 3,
-        effect: "REQUIRE_APPROVAL",
-        conditions: [{ field: "AMOUNT", operator: "GT", value: 500_00 }],
-        amountCeilingCents: null,
-        sourceFragment: "Anything over $500 needs my approval.",
-        description: "Escalate renewals above $500.00.",
-      },
-      {
-        policyVersionId: version.id,
-        ordinal: 4,
-        effect: "ALLOW_AUTO",
-        conditions: [{ field: "AMOUNT", operator: "LTE", value: 100_00 }],
-        // Every ALLOW_AUTO rule carries a ceiling. An allow rule without one is
-        // unbounded authority and the compiler refuses to produce it.
-        amountCeilingCents: 100_00,
-        sourceFragment: "Renew anything under $100 automatically.",
-        description: "Auto-renew charges at or below $100.00.",
-      },
-    ],
-  });
-}
-
-/**
- * The prior policy version.
+ * Seat and usage rows are batched via createMany rather than written one at a
+ * time. The original per-row upsert loop issued roughly 3,900 sequential
+ * round trips for the full dataset (85 seats × up to 45 usage days each) —
+ * fine against a local database, unworkable against a remote one where each
+ * round trip costs network latency. Reseeding is a demo affordance that must
+ * complete in seconds, not minutes.
  *
- * Written before the current one and superseded by it. It exists so the policy
- * page has real version history to show, and so a demo can make the point that
- * versions are immutable — the ledger's `policyVersionId` on an old entry
- * resolves to exactly these rules, not to whatever the policy says today.
- *
- * The substantive difference is the ceiling: this version auto-renewed up to
- * $250, the current one up to $100. Someone tightened it.
+ * `skipDuplicates: true` (Postgres ON CONFLICT DO NOTHING) keeps this safe to
+ * call against a non-empty table, matching the upsert semantics it replaces,
+ * even though both current call sites reset the database first.
  */
-export const PRIOR_POLICY_TEXT = [
-  "Never renew anything from CloudSync Pro.",
-  "Renew anything under $250 automatically.",
-  "Anything over $1000 needs my approval.",
-].join("\n");
-
-async function seedPriorPolicy(): Promise<void> {
-  const version = await prisma.policyVersion.create({
-    data: {
-      version: 0,
-      sourceText: PRIOR_POLICY_TEXT,
-      status: "SUPERSEDED",
-      createdAt: plusDays(DEMO_EPOCH, -45),
-      activatedAt: plusDays(DEMO_EPOCH, -45),
-      activatedBy: "user:finance-lead",
+async function seedVendor(spec: VendorSpec) {
+  const vendor = await db.vendor.upsert({
+    where: { name: spec.name },
+    update: {},
+    create: {
+      name: spec.name,
+      category: spec.category,
+      billingContact: spec.billingContact,
     },
   });
 
-  await prisma.policyRule.createMany({
-    data: [
-      {
-        policyVersionId: version.id,
-        ordinal: 1,
-        effect: "DENY",
-        conditions: [
-          { field: "VENDOR_ID", operator: "EQ", value: "vendor_cloudsync" },
-        ],
-        amountCeilingCents: null,
-        sourceFragment: "Never renew anything from CloudSync Pro.",
-        description: "Deny every renewal for CloudSync Pro.",
-      },
-      {
-        policyVersionId: version.id,
-        ordinal: 2,
-        effect: "REQUIRE_APPROVAL",
-        conditions: [{ field: "AMOUNT", operator: "GT", value: 1_000_00 }],
-        amountCeilingCents: null,
-        sourceFragment: "Anything over $1000 needs my approval.",
-        description: "Escalate renewals above $1,000.00.",
-      },
-      {
-        policyVersionId: version.id,
-        ordinal: 3,
-        effect: "ALLOW_AUTO",
-        conditions: [{ field: "AMOUNT", operator: "LTE", value: 250_00 }],
-        amountCeilingCents: 250_00,
-        sourceFragment: "Renew anything under $250 automatically.",
-        description: "Auto-renew charges at or below $250.00.",
-      },
-    ],
-  });
-}
-
-/**
- * Seeded approvals: one pending, one already expired, one resolved.
- *
- * These exist so expiry and history are demonstrable without waiting 24 hours
- * or contriving a detour mid-demo. The expired one is the important one — it
- * proves that an approval which lapsed cannot be acted on, and a judge can
- * click it rather than take the claim on faith.
- */
-async function seedApprovals(): Promise<void> {
-  const loom = SKELETON_VENDORS.find((v) => v.id === "vendor_loom")!;
-  const datadog = SKELETON_VENDORS.find((v) => v.id === "vendor_datadog")!;
-  const airtable = SKELETON_VENDORS.find((v) => v.id === "vendor_airtable")!;
-
-  const snapshot = (v: (typeof SKELETON_VENDORS)[number], gaps: string[]) => ({
-    bundleId: `bundle_${v.renewal.id}_seeded`,
-    observedAt: DEMO_EPOCH.toISOString(),
-    vendor: {
-      id: v.id,
-      name: v.name,
-      category: v.category,
-      merchantId: v.merchantId,
-    },
-    renewal: {
-      id: v.renewal.id,
-      dueAt: plusDays(DEMO_EPOCH, v.renewal.dueInDays).toISOString(),
-      amount: { cents: v.renewal.amountCents, currency: "USD" },
-      cadence: v.renewal.cadence,
-      cycleKey: v.renewal.cycleKey,
-    },
-    seats: v.seats ? { ...v.seats, windowDays: 30 } : null,
-    priceChange:
-      v.renewal.previousAmountCents && v.renewal.previousAmountCents > 0
-        ? {
-            previous: { cents: v.renewal.previousAmountCents, currency: "USD" },
-            current: { cents: v.renewal.amountCents, currency: "USD" },
-            deltaBasisPoints: Math.round(
-              ((v.renewal.amountCents - v.renewal.previousAmountCents) *
-                10_000) /
-                v.renewal.previousAmountCents,
-            ),
-          }
-        : null,
-    priorCycleAmount: v.renewal.priorCycleAmountCents
-      ? { cents: v.renewal.priorCycleAmountCents, currency: "USD" }
-      : null,
-    messages: [],
-    gaps,
-  });
-
-  const verdict = (
-    v: (typeof SKELETON_VENDORS)[number],
-    reason: string,
-    ruleId: string,
-    fragment: string,
-    description: string,
-  ) => ({
-    bundleId: `bundle_${v.renewal.id}_seeded`,
-    proposalId: `proposal_${v.renewal.id}_seeded`,
-    renewalId: v.renewal.id,
-    decision: "REQUIRE_APPROVAL",
-    reason,
-    citedRuleId: ruleId,
-    citedSourceFragment: fragment,
-    citedRuleDescription: description,
-    policyVersionId: "policy_seed_v1",
-    permittedAmount: null,
-    appliedCeiling: 100_00,
-    evidenceGaps: [],
-    counterfactual: null,
-  });
-
-  // Pending, with plenty of time left. The one a demo approves on stage.
-  await prisma.approvalRequest.create({
-    data: {
-      renewalId: airtable.renewal.id,
-      cycleKey: airtable.renewal.cycleKey,
-      vendorId: airtable.id,
-      kind: "POLICY_EXCEPTION",
-      status: "PENDING",
-      amountCents: airtable.renewal.amountCents,
-      evidenceSnapshot: snapshot(airtable, []) as never,
-      verdictSnapshot: verdict(
-        airtable,
-        "RULE_MATCHED",
-        "rule_price_increase",
-        "Anything with a price increase above 15% needs my approval.",
-        "Escalate renewals whose price rose by more than 15%.",
-      ) as never,
-      requestedAt: DEMO_EPOCH,
-      expiresAt: plusDays(DEMO_EPOCH, 1),
-    },
-  });
-
-  // Already expired. Raised two days before the epoch, so it lapsed a day
-  // before the demo clock starts — the buttons are gone and the page says why.
-  await prisma.approvalRequest.create({
-    data: {
-      renewalId: loom.renewal.id,
-      cycleKey: loom.renewal.cycleKey,
-      vendorId: loom.id,
-      kind: "POLICY_EXCEPTION",
-      status: "PENDING",
-      amountCents: loom.renewal.amountCents,
-      evidenceSnapshot: snapshot(loom, ["NO_USAGE_DATA"]) as never,
-      verdictSnapshot: verdict(
-        loom,
-        "MISSING_EVIDENCE",
-        "rule_allow_small",
-        "Renew anything under $100 automatically.",
-        "Auto-renew charges at or below $100.00.",
-      ) as never,
-      requestedAt: plusDays(DEMO_EPOCH, -2),
-      expiresAt: plusDays(DEMO_EPOCH, -1),
-    },
-  });
-
-  // Historical: a human already said no. Shows the resolved list is real.
-  await prisma.approvalRequest.create({
-    data: {
-      renewalId: datadog.renewal.id,
-      cycleKey: "2025-02",
-      vendorId: datadog.id,
-      kind: "POLICY_EXCEPTION",
-      status: "REJECTED",
-      amountCents: datadog.renewal.amountCents,
-      evidenceSnapshot: snapshot(datadog, []) as never,
-      verdictSnapshot: verdict(
-        datadog,
-        "RULE_MATCHED",
-        "rule_price_increase",
-        "Anything with a price increase above 15% needs my approval.",
-        "Escalate renewals whose price rose by more than 15%.",
-      ) as never,
-      requestedAt: plusDays(DEMO_EPOCH, -30),
-      expiresAt: plusDays(DEMO_EPOCH, -29),
-      resolvedAt: plusDays(DEMO_EPOCH, -30),
-      resolvedBy: "user:finance-lead",
-    },
-  });
-}
-
-/** One mandate per vendor, sized to what the policy could ever permit. */
-async function seedMandates(): Promise<void> {
-  const adapter = new MockPravaAdapter();
-  for (const v of SKELETON_VENDORS) {
-    // A vendor with no merchant has nothing to pin a mandate to, so no
-    // mandate is created. The engine escalates it for the missing merchant,
-    // and the outcome router would refuse it for the absent mandate — two
-    // independent reasons the same charge does not happen.
-    if (!v.merchantId) continue;
-    await adapter.createMandate({
-      vendorId: v.id,
-      merchantId: v.merchantId,
-      amountCeilingCents: 500_00,
-      currency: "USD",
-      expiresAt: plusDays(DEMO_EPOCH, 90).toISOString(),
-    });
-  }
-}
-
-export async function seed(): Promise<void> {
-  await clear();
-  await seedClock();
-
-  for (const v of SKELETON_VENDORS) {
-    await prisma.vendor.create({
-      data: {
-        id: v.id,
-        name: v.name,
-        category: v.category,
-        merchantId: v.merchantId,
-      },
+  if (spec.seats) {
+    await db.seat.createMany({
+      data: Array.from({ length: spec.seats.assigned }, (_, index) => ({
+        vendorId: vendor.id,
+        email: `user${index + 1}@example.com`,
+        assignedAt: addDays(CLOCK, -180),
+      })),
+      skipDuplicates: true,
     });
 
-    await prisma.renewal.create({
-      data: {
-        id: v.renewal.id,
-        vendorId: v.id,
-        dueAt: plusDays(DEMO_EPOCH, v.renewal.dueInDays),
-        amountCents: v.renewal.amountCents,
-        cadence: v.renewal.cadence,
-        cycleKey: v.renewal.cycleKey,
-        priorCycleAmountCents: v.renewal.priorCycleAmountCents,
-        previousAmountCents: v.renewal.previousAmountCents,
-      },
-    });
-
-    if (v.seats) {
-      await prisma.seatRecord.create({
-        data: {
-          vendorId: v.id,
-          licensed: v.seats.licensed,
-          active: v.seats.active,
-          dormant: v.seats.dormant,
-          windowDays: 30,
-          observedAt: DEMO_EPOCH,
-        },
+    if (spec.withUsage) {
+      const seats = await db.seat.findMany({
+        where: { vendorId: vendor.id },
+        select: { id: true, email: true },
+        orderBy: { email: "asc" },
       });
+
+      const usageRows: {
+        vendorId: string;
+        seatId: string;
+        day: Date;
+        loggedIn: boolean;
+      }[] = [];
+
+      seats.forEach((seat, index) => {
+        const active = index < spec.seats!.active;
+        for (let dayOffset = USAGE_HISTORY_DAYS; dayOffset >= -USAGE_FUTURE_DAYS; dayOffset--) {
+          const day = startOfDay(addDays(CLOCK, -dayOffset));
+          // Active seats log in on most weekdays. Inactive seats went dark 41
+          // days ago and have not returned — a fact, not an absence.
+          //
+          // The modulo is written to stay non-negative because `dayOffset` goes
+          // negative past the demo clock; a raw `%` returns negatives there and
+          // would thin the cadence out exactly where the demo needs it. For the
+          // historical range the two forms are identical, so seeded history is
+          // unchanged.
+          const loggedIn = active
+            ? (((index + dayOffset) % 7) + 7) % 7 > 1
+            : dayOffset > 41;
+          usageRows.push({ vendorId: vendor.id, seatId: seat.id, day, loggedIn });
+        }
+      });
+
+      await db.usageRecord.createMany({ data: usageRows, skipDuplicates: true });
     }
   }
 
-  await seedPriorPolicy();
-  await seedPolicy();
-  await seedMandates();
-  await seedApprovals();
+  // Prior cycles, then the current one. Price history drives the creep signal.
+  const monthsBack = spec.priorAmountsCents.length;
+  const renewalRows = spec.priorAmountsCents.map((amountCents, index) => {
+    const offset = (monthsBack - index) * 30;
+    return {
+      vendorId: vendor.id,
+      cycleStart: startOfDay(addDays(CLOCK, -offset)),
+      dueDate: startOfDay(addDays(CLOCK, -offset + 3)),
+      amountCents,
+      currency: "USD",
+      frequency: spec.renewal.frequency,
+    };
+  });
+  await db.renewal.createMany({ data: renewalRows, skipDuplicates: true });
+
+  const cycleStart = startOfDay(CLOCK);
+  await db.renewal.upsert({
+    where: { vendorId_cycleStart: { vendorId: vendor.id, cycleStart } },
+    update: {},
+    create: {
+      vendorId: vendor.id,
+      cycleStart,
+      dueDate: startOfDay(addDays(CLOCK, spec.renewal.dueInDays)),
+      amountCents: spec.renewal.amountCents,
+      currency: "USD",
+      frequency: spec.renewal.frequency,
+    },
+  });
+
+  // The reserved cycles. Deliberately outside the 7-day lookahead at the demo
+  // clock, so the overnight run leaves them untouched and the injection beat
+  // has real work. Same amount and cadence as the current cycle — these are
+  // ordinary months, not a special case the pipeline treats differently.
+  //
+  // Safe against price history: the evidence builder selects prior cycles with
+  // `cycleStart < this renewal's cycleStart`, so a later cycle never appears in
+  // an earlier renewal's history.
+  for (let n = 1; n <= (spec.reservedCycles ?? 0); n += 1) {
+    const offset = NEXT_CYCLE_DAYS * n;
+    const reservedStart = startOfDay(addDays(CLOCK, offset));
+    await db.renewal.upsert({
+      where: {
+        vendorId_cycleStart: { vendorId: vendor.id, cycleStart: reservedStart },
+      },
+      update: {},
+      create: {
+        vendorId: vendor.id,
+        cycleStart: reservedStart,
+        dueDate: startOfDay(addDays(CLOCK, offset + spec.renewal.dueInDays)),
+        amountCents: spec.renewal.amountCents,
+        currency: "USD",
+        frequency: spec.renewal.frequency,
+      },
+    });
+  }
+
+  if (spec.mandate) {
+    // Placeholder Prava identifiers. Real mandates come from the passkey
+    // ceremony; this table is only ever a mirror.
+    await db.mandate.upsert({
+      where: { vendorId: vendor.id },
+      update: {},
+      create: {
+        vendorId: vendor.id,
+        pravaMandateId: `mandate_seed_${spec.name.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
+        status: "ACTIVE",
+        capCents: spec.mandate.capCents,
+        remainingCents: spec.mandate.capCents,
+        frequency: spec.renewal.frequency,
+        expiresAt: addDays(CLOCK, 300),
+      },
+    });
+  }
+
+  return vendor;
 }
 
-async function main(): Promise<void> {
-  await seed();
-  const vendors = await prisma.vendor.count();
-  const renewals = await prisma.renewal.count();
-  console.log(`seeded ${vendors} vendors, ${renewals} renewals`);
-  for (const v of SKELETON_VENDORS) {
-    console.log(`  ${v.name.padEnd(14)} ${v.scenario}`);
+const POLICY_V1_TEXT = "Auto-renew anything under $200 a month.";
+
+const POLICY_V2_TEXT = [
+  "Never auto-renew Vercel.",
+  "Auto-renew anything under $500 a month.",
+  "Anything over $500 a month needs my approval.",
+].join(" ");
+
+async function seedPolicies(vercelId: string) {
+  // v1 is deliberately loose and gets superseded. Having a real prior version
+  // makes versioning demonstrable without contriving a detour on stage.
+  const existingV1 = await db.policyVersion.findUnique({ where: { version: 1 } });
+  if (!existingV1) {
+    await db.policyVersion.create({
+      data: {
+        version: 1,
+        englishText: POLICY_V1_TEXT,
+        status: "SUPERSEDED",
+        activatedAt: addDays(CLOCK, -30),
+        rules: {
+          create: [
+            {
+              ordinal: 0,
+              effect: "ALLOW_AUTO",
+              scopeKind: "ANY",
+              maxAmountCents: 20000,
+              sourceFragment: POLICY_V1_TEXT,
+            },
+            {
+              ordinal: 1,
+              effect: "REQUIRE_APPROVAL",
+              scopeKind: "ANY",
+              sourceFragment:
+                "(default: anything not covered above is sent to you)",
+            },
+          ],
+        },
+      },
+    });
+  }
+
+  const existingV2 = await db.policyVersion.findUnique({ where: { version: 2 } });
+  if (existingV2) return existingV2;
+
+  return db.policyVersion.create({
+    data: {
+      version: 2,
+      englishText: POLICY_V2_TEXT,
+      status: "ACTIVE",
+      activatedAt: CLOCK,
+      rules: {
+        create: [
+          {
+            ordinal: 0,
+            effect: "DENY",
+            scopeKind: "VENDOR",
+            scopeVendorId: vercelId,
+            sourceFragment: "Never auto-renew Vercel.",
+          },
+          {
+            ordinal: 1,
+            effect: "ALLOW_AUTO",
+            scopeKind: "ANY",
+            maxAmountCents: 50000,
+            sourceFragment: "Auto-renew anything under $500 a month.",
+          },
+          {
+            ordinal: 2,
+            effect: "REQUIRE_APPROVAL",
+            scopeKind: "ANY",
+            sourceFragment: "Anything over $500 a month needs my approval.",
+          },
+          {
+            ordinal: 3,
+            effect: "REQUIRE_APPROVAL",
+            scopeKind: "ANY",
+            sourceFragment:
+              "(default: anything not covered above is sent to you)",
+          },
+        ],
+      },
+    },
+  });
+}
+
+/**
+ * Three approvals, one per lifecycle state worth showing.
+ *
+ * The pre-expired one earns its place: expiry is a real behaviour and waiting
+ * 24 hours on stage to demonstrate it is not an option. The historical approved
+ * one gives the precedent line something true to cite.
+ */
+async function seedApprovals(input: {
+  policyVersionId: string;
+  ruleId: string;
+  vendors: Map<string, string>;
+}) {
+  const cycleStart = startOfDay(CLOCK);
+
+  async function snapshotFor(vendorName: string, amountCents: number) {
+    const vendorId = input.vendors.get(vendorName)!;
+    const renewal = await db.renewal.findUnique({
+      where: { vendorId_cycleStart: { vendorId, cycleStart } },
+    });
+
+    return {
+      vendorId,
+      renewalId: renewal?.id ?? `renewal-${vendorName.toLowerCase()}`,
+      proposal: {
+        vendorId,
+        renewalId: renewal?.id ?? "",
+        action: "RENEW_AS_IS",
+        amountCents,
+        currency: "USD",
+        rationale: `${vendorName} renewal requires review before it is charged.`,
+        alternative: {
+          action: "RENEW_REDUCED",
+          reason: "Seat usage does not clearly support a reduction yet.",
+        },
+      },
+      evidence: {
+        vendorId,
+        vendorName,
+        renewalId: renewal?.id ?? "",
+        cycleStart: cycleStart.toISOString().slice(0, 10),
+        asOf: CLOCK.toISOString(),
+      },
+    };
+  }
+
+  const notion = await snapshotFor("Notion", 480000);
+  const airtable = await snapshotFor("Airtable", 24000);
+  const linear = await snapshotFor("Linear", 16000);
+
+  const rows = [
+    {
+      // Pending — the one a judge acts on.
+      type: "REQUIRE" as const,
+      data: {
+        type: "POLICY_EXCEPTION" as const,
+        status: "PENDING" as const,
+        vendorId: notion.vendorId,
+        renewalId: notion.renewalId,
+        amountCents: 480000,
+        expiresAt: addDays(CLOCK, 1),
+        snapshot: notion,
+      },
+    },
+    {
+      // Already expired. Consent was to act on evidence that has since aged out.
+      type: "REQUIRE" as const,
+      data: {
+        type: "POLICY_EXCEPTION" as const,
+        status: "EXPIRED" as const,
+        vendorId: airtable.vendorId,
+        renewalId: airtable.renewalId,
+        amountCents: 24000,
+        expiresAt: addDays(CLOCK, -2),
+        snapshot: airtable,
+      },
+    },
+    {
+      // Historical, approved. Precedent the interface can honestly cite.
+      type: "REQUIRE" as const,
+      data: {
+        type: "POLICY_EXCEPTION" as const,
+        status: "APPROVED" as const,
+        vendorId: linear.vendorId,
+        renewalId: linear.renewalId,
+        amountCents: 16000,
+        expiresAt: addDays(CLOCK, -25),
+        snapshot: linear,
+      },
+    },
+  ];
+
+  for (const row of rows) {
+    const existing = await db.approval.findFirst({
+      where: { vendorId: row.data.vendorId, status: row.data.status },
+    });
+    if (existing) continue;
+
+    await db.approval.create({
+      data: {
+        type: row.data.type,
+        status: row.data.status,
+        vendorId: row.data.vendorId,
+        renewalId: row.data.renewalId,
+        cycleStart,
+        proposalSnapshot: row.data.snapshot.proposal,
+        evidenceSnapshot: row.data.snapshot.evidence,
+        policyVersionId: input.policyVersionId,
+        ruleId: input.ruleId,
+        amountCents: row.data.amountCents,
+        expiresAt: row.data.expiresAt,
+        approverId: row.data.status === "APPROVED" ? "owner@example.com" : null,
+        approvedAt: row.data.status === "APPROVED" ? addDays(CLOCK, -28) : null,
+      },
+    });
   }
 }
 
-if (process.argv[1] && process.argv[1].includes("seed")) {
-  main()
-    .then(() => prisma.$disconnect())
-    .catch(async (error) => {
-      console.error(error);
-      await prisma.$disconnect();
-      process.exit(1);
-    });
+/**
+ * Wipes every table. Ordered by dependency so foreign keys never block.
+ *
+ * Reseeding is a demo affordance, not a maintenance tool: a run that goes
+ * sideways on stage is recovered in seconds rather than abandoned.
+ */
+export async function resetDatabase(): Promise<void> {
+  await db.ledgerEntry.deleteMany();
+  await db.tick.deleteMany();
+  await db.approval.deleteMany();
+  await db.policyRule.deleteMany();
+  await db.policyVersion.deleteMany();
+  await db.mandate.deleteMany();
+  await db.inboundMessage.deleteMany();
+  await db.usageRecord.deleteMany();
+  await db.seat.deleteMany();
+  await db.renewal.deleteMany();
+  await db.vendor.deleteMany();
+  await db.systemState.deleteMany();
 }
+
+export async function seedDatabase() {
+  await db.systemState.upsert({
+    where: { id: "singleton" },
+    update: { demoClock: CLOCK, killSwitchEngaged: false, tickLockHeldBy: null },
+    create: { id: "singleton", demoClock: CLOCK },
+  });
+
+  const vendors = new Map<string, string>();
+  for (const spec of VENDORS) {
+    const vendor = await seedVendor(spec);
+    vendors.set(spec.name, vendor.id);
+  }
+
+  const policy = await seedPolicies(vendors.get("Vercel")!);
+
+  const approvalRule = await db.policyRule.findFirst({
+    where: { policyVersionId: policy.id, effect: "REQUIRE_APPROVAL" },
+    orderBy: { ordinal: "asc" },
+  });
+
+  if (approvalRule) {
+    await seedApprovals({
+      policyVersionId: policy.id,
+      ruleId: approvalRule.id,
+      vendors,
+    });
+  }
+
+  return {
+    vendors: await db.vendor.count(),
+    seats: await db.seat.count(),
+    usageRecords: await db.usageRecord.count(),
+    renewals: await db.renewal.count(),
+    mandates: await db.mandate.count(),
+    policyVersions: await db.policyVersion.count(),
+    approvals: await db.approval.count(),
+  };
+}
+
+export { VENDORS, POLICY_V2_TEXT };

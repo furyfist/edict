@@ -1,238 +1,169 @@
-import { prisma } from "@/lib/db/client";
-import { formatMoney } from "@/lib/contracts";
-import { DbError, Empty, Panel, PageHeader } from "../components/ui";
+import { listVersions } from "@/lib/policy/versions";
+import { formatCents } from "@/lib/contracts/money";
+import type { Cents } from "@/lib/contracts";
+import { DbUnavailable, PageHeader } from "../_components/page-header";
 
 export const dynamic = "force-dynamic";
+
+type Rule = {
+  id: string;
+  ordinal: number;
+  effect: string;
+  scopeKind: string;
+  scopeVendorId: string | null;
+  scopeCategory: string | null;
+  maxAmountCents: number | null;
+  minActiveSeatPct: number | null;
+  frequency: string | null;
+  renewalWithinDays: number | null;
+  sourceFragment: string;
+};
+
+const EFFECT_STYLE: Record<string, string> = {
+  DENY: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+  REQUIRE_APPROVAL: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+  ALLOW_AUTO: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+};
+
+function conditionSummary(rule: Rule): string {
+  const parts: string[] = [];
+  if (rule.maxAmountCents !== null) {
+    parts.push(`up to ${formatCents(rule.maxAmountCents as Cents)}`);
+  }
+  if (rule.minActiveSeatPct !== null) {
+    parts.push(`usage above ${rule.minActiveSeatPct}%`);
+  }
+  if (rule.frequency !== null) parts.push(rule.frequency.toLowerCase());
+  if (rule.renewalWithinDays !== null) {
+    parts.push(`within ${rule.renewalWithinDays}d of renewal`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "no conditions";
+}
+
+function scopeSummary(rule: Rule): string {
+  if (rule.scopeKind === "VENDOR") return "one vendor";
+  if (rule.scopeKind === "CATEGORY") return `category: ${rule.scopeCategory}`;
+  return "everything";
+}
 
 /**
  * Policy — where authority comes from.
  *
- * The English on the left, the compiled rules on the right, and every rule
- * linked to the exact fragment of the user's own sentence it came from. That
- * link is the product's most legible claim: the authority the agent acts under
- * is not something the system decided, it is something the user wrote down.
- *
- * Versions are immutable. Editing produces a new version, and a past ledger
- * entry's policy version always resolves to exactly the rules in force when
- * the decision was made.
+ * The user's English on one side, the rules it compiled into on the other, each
+ * rule quoting the exact span it came from. Every enforcement in this product
+ * traces back to words a human actually wrote, and this page is where that
+ * claim is verifiable rather than merely asserted.
  */
-
-const EFFECT_TONE: Record<string, string> = {
-  ALLOW_AUTO: "var(--allow)",
-  REQUIRE_APPROVAL: "var(--escalate)",
-  DENY: "var(--deny)",
-};
-
 export default async function PolicyPage() {
-  let versions;
+  let versions: Array<{
+    id: string;
+    version: number;
+    englishText: string;
+    status: string;
+    activatedAt: Date | null;
+    rules: Rule[];
+  }> = [];
+  let unavailable = false;
 
   try {
-    versions = await prisma.policyVersion.findMany({
-      include: { rules: { orderBy: { ordinal: "asc" } } },
-      orderBy: { version: "desc" },
-    });
+    versions = (await listVersions()) as typeof versions;
   } catch {
-    return (
-      <>
-        <PageHeader title="Policy" question="Where does authority come from?" />
-        <DbError />
-      </>
-    );
+    unavailable = true;
   }
 
-  const active = versions.find((v) => v.status === "ACTIVE");
-  const history = versions.filter((v) => v.id !== active?.id);
+  const active = versions.find((version) => version.status === "ACTIVE");
+  const others = versions.filter((version) => version.status !== "ACTIVE");
 
   return (
-    <>
+    <section>
       <PageHeader
         title="Policy"
-        question="Where does the agent's authority come from?"
+        question="Your words on the left, the rules they compiled into on the right. Nothing enforces anything it cannot quote."
       />
 
-      {!active ? (
-        <Panel>
-          <Empty>
-            No policy is active. Nothing can be adjudicated until one is
-            compiled and confirmed.
-          </Empty>
-        </Panel>
+      {unavailable ? (
+        <DbUnavailable />
+      ) : !active ? (
+        <p className="mt-6 text-sm text-neutral-500">
+          No active policy. The agent halts until one is activated.
+        </p>
       ) : (
         <>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(240px, 1fr) minmax(320px, 1.4fr)",
-              gap: 16,
-              alignItems: "start",
-            }}
-          >
-            <Panel>
-              <h2 style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
-                WHAT YOU WROTE
+          <div className="mt-6 grid gap-6 md:grid-cols-2">
+            <div>
+              <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                What you wrote — version {active.version}
               </h2>
-              <pre
-                style={{
-                  margin: 0,
-                  whiteSpace: "pre-wrap",
-                  fontFamily: "inherit",
-                  fontSize: 14,
-                  lineHeight: 1.7,
-                }}
-              >
-                {active.sourceText}
-              </pre>
-              <p
-                style={{
-                  color: "var(--muted)",
-                  fontSize: 12,
-                  marginBottom: 0,
-                  marginTop: 14,
-                }}
-              >
-                Version {active.version}, confirmed by{" "}
-                {active.activatedBy ?? "—"} on{" "}
-                {active.activatedAt
-                  ? active.activatedAt.toISOString().slice(0, 10)
-                  : "—"}
-                .
-              </p>
-            </Panel>
+              <blockquote className="mt-3 border-l-2 border-neutral-700 pl-3 text-sm leading-relaxed text-neutral-200">
+                {active.englishText}
+              </blockquote>
+            </div>
 
-            <Panel padded={false}>
-              <h2
-                style={{
-                  fontSize: 12,
-                  color: "var(--muted)",
-                  padding: "16px 16px 10px",
-                  margin: 0,
-                }}
-              >
-                WHAT IS ENFORCED
+            <div>
+              <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                What it enforces
               </h2>
-              {active.rules.map((rule) => (
-                <div
-                  key={rule.id}
-                  style={{
-                    padding: "12px 16px",
-                    borderTop: "1px solid var(--border)",
-                  }}
-                >
-                  <div
-                    style={{ display: "flex", gap: 8, alignItems: "center" }}
+              <ol className="mt-3 space-y-3">
+                {active.rules.map((rule) => (
+                  <li
+                    key={rule.id}
+                    className="rounded border border-neutral-800 p-3"
                   >
-                    <span
-                      className="mono"
-                      style={{ color: "var(--muted)", fontSize: 11 }}
-                    >
-                      {rule.ordinal}
-                    </span>
-                    <span
-                      className="mono"
-                      style={{
-                        color: EFFECT_TONE[rule.effect] ?? "var(--muted)",
-                        border: `1px solid ${EFFECT_TONE[rule.effect] ?? "var(--border)"}`,
-                        borderRadius: 3,
-                        padding: "1px 6px",
-                        fontSize: 11,
-                      }}
-                    >
-                      {rule.effect.replace(/_/g, " ")}
-                    </span>
-                    {rule.amountCeilingCents !== null ? (
-                      <span
-                        className="mono"
-                        style={{ fontSize: 11, color: "var(--muted)" }}
-                      >
-                        ceiling{" "}
-                        {formatMoney({
-                          cents: rule.amountCeilingCents,
-                          currency: "USD",
-                        })}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-[10px] text-neutral-600">
+                        {rule.ordinal}
                       </span>
-                    ) : null}
-                  </div>
+                      <span
+                        className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                          EFFECT_STYLE[rule.effect] ??
+                          "border-neutral-700 text-neutral-400"
+                        }`}
+                      >
+                        {rule.effect.toLowerCase().replace(/_/g, " ")}
+                      </span>
+                      <span className="text-xs text-neutral-500">
+                        {scopeSummary(rule)}
+                      </span>
+                    </div>
 
-                  <p style={{ margin: "6px 0 0", fontSize: 13 }}>
-                    {rule.description}
-                  </p>
+                    <p className="mt-2 text-xs text-neutral-400">
+                      {conditionSummary(rule)}
+                    </p>
 
-                  {/* The link back to the user's own words. */}
-                  <blockquote
-                    style={{
-                      margin: "6px 0 0",
-                      paddingLeft: 10,
-                      borderLeft: "2px solid var(--accent)",
-                      color: "var(--muted)",
-                      fontSize: 12,
-                      fontStyle: "italic",
-                    }}
-                  >
-                    “{rule.sourceFragment}”
-                  </blockquote>
-                </div>
-              ))}
-            </Panel>
+                    <p className="mt-2 text-xs italic text-neutral-300">
+                      &ldquo;{rule.sourceFragment}&rdquo;
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </div>
           </div>
 
-          <Panel>
-            <h2 style={{ fontSize: 13, marginBottom: 8 }}>Evaluation order</h2>
-            <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>
-              Denials are considered first, all of them, before any permission
-              is. A prohibition written last still defeats a permission written
-              first — the order you happened to type your sentences in does not
-              decide whether a prohibition holds. Among the remaining rules, the
-              first match wins. If nothing matches, the action requires
-              approval.
-            </p>
-          </Panel>
+          {others.length > 0 ? (
+            <div className="mt-10">
+              <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                Version history
+              </h2>
+              <ul className="mt-3 divide-y divide-neutral-800/80 border-y border-neutral-800/80">
+                {others.map((version) => (
+                  <li
+                    key={version.id}
+                    className="flex items-baseline justify-between gap-4 py-2.5"
+                  >
+                    <span className="truncate text-sm text-neutral-400">
+                      v{version.version} · {version.englishText.slice(0, 70)}
+                      {version.englishText.length > 70 ? "…" : ""}
+                    </span>
+                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-neutral-600">
+                      {version.status.toLowerCase()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </>
       )}
-
-      {history.length > 0 ? (
-        <Panel padded={false}>
-          <h2
-            style={{
-              fontSize: 12,
-              color: "var(--muted)",
-              padding: "16px 16px 10px",
-              margin: 0,
-            }}
-          >
-            VERSION HISTORY
-          </h2>
-          {history.map((version) => (
-            <div
-              key={version.id}
-              style={{
-                padding: "10px 16px",
-                borderTop: "1px solid var(--border)",
-                display: "flex",
-                gap: 12,
-                alignItems: "baseline",
-                fontSize: 13,
-              }}
-            >
-              <span className="mono">v{version.version}</span>
-              <span className="mono" style={{ color: "var(--muted)", fontSize: 11 }}>
-                {version.status}
-              </span>
-              <span style={{ color: "var(--muted)", fontSize: 12 }}>
-                {version.rules.length} rules
-              </span>
-              <span
-                style={{
-                  color: "var(--muted)",
-                  fontSize: 12,
-                  marginLeft: "auto",
-                }}
-              >
-                {version.createdAt.toISOString().slice(0, 10)}
-              </span>
-            </div>
-          ))}
-        </Panel>
-      ) : null}
-    </>
+    </section>
   );
 }

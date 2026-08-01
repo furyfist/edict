@@ -1,15 +1,22 @@
 /**
  * The five frozen contracts.
  *
- * Evidence bundle, proposal, policy rule, verdict, ledger entry. Everything the
- * system passes between modules is one of these shapes. They are designed from
- * the domain, not derived from table columns — persistence maps onto them, not
- * the other way around.
+ *   1. EvidenceBundle — the factual basis for a decision
+ *   2. Proposal       — the agent's advisory output
+ *   3. Policy / Rule  — authority, compiled from English
+ *   4. Verdict        — the engine's decision
+ *   5. LedgerEntry    — the immutable record
  *
- * These change only by explicit team decision, never incidentally.
+ * These shapes are the interface every workstream codes against. They change
+ * only by explicit team decision, never incidentally.
+ *
+ * This module is pure. It imports nothing — not Prisma, not the database, not
+ * any runtime dependency — so that the policy engine can depend on it without
+ * acquiring an import path to anything that performs I/O.
  */
 
-export * from "./common";
+export * from "./money";
+export * from "./enums";
 export * from "./evidence";
 export * from "./proposal";
 export * from "./policy";

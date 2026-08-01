@@ -1,238 +1,167 @@
-import { prisma } from "../db/client";
+import { cents } from "../contracts/money";
+import { isChargeable } from "../contracts";
+import type { Cents, MandateStatus } from "../contracts";
 import type {
   ChargeRequest,
   ChargeResult,
-  CreateMandateRequest,
-  HealthResult,
-  Mandate,
-  MandateResult,
-  MandateStatus,
-  PravaAdapter,
+  MandateSnapshot,
+  MandateStore,
+  PaymentBoundary,
 } from "./types";
 
 /**
- * The mock payment adapter.
+ * Mock payment boundary.
  *
- * It enforces the same three things the real network enforces — the amount
- * ceiling, the mandate status, and the merchant pin — against the local mandate
- * rows. That is what makes it a usable fallback rather than a stub that always
- * says yes: the decline path can be demonstrated with this adapter in place,
- * and the ledger entry it produces is the same shape the real one produces.
+ * Simulates the behavior the real adapter is expected to exhibit, so the whole
+ * pipeline can be built and proven correct before Prava is introduced. It stays
+ * in the repository through the demo as a live fallback — it costs nothing to
+ * keep and it is the thing that saves the run if the sandbox misbehaves.
  *
- * It is deterministic. Ids are derived from the idempotency key rather than
- * generated randomly, so a replayed charge returns the same charge id, and two
- * runs of the seed produce byte-identical ledgers.
- *
- * Retained in the repository through the demo. It costs nothing to keep and it
- * is the thing that runs when Prava's sandbox is down.
+ * The over-cap decline it models is the behavior being verified in
+ * docs/spikes/prava-decline.md. If that spike comes back negative, this mock is
+ * still correct about OUR side of the contract; only the real adapter changes.
  */
 
-/** Deterministic id derived from its inputs. No randomness anywhere. */
-function derivedId(prefix: string, seed: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${prefix}_mock_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+export interface MockOptions {
+  store: MandateStore;
+  /**
+   * Forces the next charge to fail. Used to prove that a charge failing
+   * mid-flight still produces a recorded outcome.
+   */
+  failMode?: "TRANSIENT" | "UNKNOWN" | null;
 }
 
-function toMandate(row: {
-  pravaMandateId: string;
-  status: string;
-  amountCeilingCents: number;
-  spentCents: number;
-  currency: string;
-  merchantId: string | null;
-  expiresAt: Date | null;
-}): Mandate {
+export function createMockAdapter(options: MockOptions): PaymentBoundary {
+  const { store } = options;
+  let failMode = options.failMode ?? null;
+  let counter = 0;
+
   return {
-    mandateId: row.pravaMandateId,
-    status: row.status as MandateStatus,
-    amountCeilingCents: row.amountCeilingCents,
-    spentCents: row.spentCents,
-    currency: row.currency as Mandate["currency"],
-    merchantId: row.merchantId,
-    expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
+    name: "mock",
+
+    async health() {
+      return true;
+    },
+
+    async getMandate(mandateId) {
+      return store.get(mandateId);
+    },
+
+    async pauseMandate(mandateId) {
+      return store.setStatus(mandateId, "PAUSED");
+    },
+
+    async resumeMandate(mandateId) {
+      return store.setStatus(mandateId, "ACTIVE");
+    },
+
+    async cancelMandate(mandateId) {
+      return store.setStatus(mandateId, "CANCELLED");
+    },
+
+    async charge(request: ChargeRequest): Promise<ChargeResult> {
+      if (failMode) {
+        const kind = failMode;
+        failMode = null;
+        return {
+          ok: false,
+          mandateId: request.mandateId,
+          failure: {
+            kind,
+            code: kind === "TRANSIENT" ? "network_error" : "unknown_error",
+            message:
+              kind === "TRANSIENT"
+                ? "Simulated transient failure reaching the payment provider."
+                : "Simulated unknown failure.",
+            retryable: kind === "TRANSIENT",
+          },
+        };
+      }
+
+      const mandate = await store.get(request.mandateId);
+
+      if (!mandate) {
+        return {
+          ok: false,
+          mandateId: request.mandateId,
+          failure: {
+            kind: "MANDATE_NOT_FOUND",
+            code: "mandate_not_found",
+            message: `No mandate ${request.mandateId}.`,
+            retryable: false,
+          },
+        };
+      }
+
+      if (!isChargeable(mandate.status)) {
+        return {
+          ok: false,
+          mandateId: request.mandateId,
+          failure: {
+            kind: "MANDATE_INACTIVE",
+            code: "mandate_inactive",
+            message: `Mandate is ${mandate.status.toLowerCase()} and cannot be charged.`,
+            retryable: false,
+          },
+        };
+      }
+
+      // The ceiling. In production this is enforced in the tokenized credential
+      // by the card network, not by application code — which is precisely why
+      // a compromised agent still cannot overspend.
+      if (request.amountCents > mandate.remainingCents) {
+        return {
+          ok: false,
+          mandateId: request.mandateId,
+          failure: {
+            kind: "DECLINED_OVER_CAP",
+            code: "declined_over_cap",
+            message: `Declined: ${request.amountCents} exceeds the authorized ceiling of ${mandate.remainingCents}.`,
+            retryable: false,
+          },
+        };
+      }
+
+      await store.consume(request.mandateId, request.amountCents);
+      counter += 1;
+
+      return {
+        ok: true,
+        mandateId: request.mandateId,
+        chargeId: `mock_charge_${request.idempotencyKey}_${counter}`,
+        status: "succeeded",
+      };
+    },
   };
 }
 
-export class MockPravaAdapter implements PravaAdapter {
-  readonly mode = "mock" as const;
+/** In-memory store for tests. Deterministic and DB-free. */
+export function inMemoryMandateStore(
+  seed: MandateSnapshot[] = [],
+): MandateStore {
+  const map = new Map<string, MandateSnapshot>(
+    seed.map((mandate) => [mandate.mandateId, { ...mandate }]),
+  );
 
-  async charge(request: ChargeRequest): Promise<ChargeResult> {
-    const row = await prisma.mandate.findUnique({
-      where: { pravaMandateId: request.mandateId },
-    });
-
-    if (!row) {
-      return {
-        ok: false,
-        kind: "MANDATE_NOT_FOUND",
-        networkMessage: `No mandate ${request.mandateId}.`,
-        chargeId: null,
-        sessionId: null,
-      };
-    }
-
-    const sessionId = derivedId("ses", request.idempotencyKey);
-
-    if (row.status === "PAUSED") {
-      return {
-        ok: false,
-        kind: "MANDATE_PAUSED",
-        networkMessage:
-          "The mandate is paused. No charge was authorized against it.",
-        chargeId: null,
-        sessionId,
-      };
-    }
-
-    if (row.status === "CANCELLED" || row.status === "EXPIRED") {
-      return {
-        ok: false,
-        kind: row.status === "EXPIRED" ? "MANDATE_EXPIRED" : "DECLINED",
-        networkMessage: `The mandate is ${row.status.toLowerCase()}.`,
-        chargeId: null,
-        sessionId,
-      };
-    }
-
-    // The ceiling is enforced here, in the credential, exactly as the network
-    // enforces it. The policy engine is a separate, earlier gate — this decline
-    // happens even if the engine were bypassed entirely.
-    const remaining = row.amountCeilingCents - row.spentCents;
-    if (request.amountCents > remaining) {
-      return {
-        ok: false,
-        kind: "DECLINED",
-        networkMessage: `Amount ${request.amountCents} exceeds the remaining authority of ${remaining} on this mandate.`,
-        chargeId: null,
-        sessionId,
-      };
-    }
-
-    // Idempotent: a replayed key returns the original charge without spending
-    // twice. The stage button will be pressed twice.
-    const chargeId = derivedId("chg", request.idempotencyKey);
-    const alreadyCharged = await prisma.ledgerEntry.findFirst({
-      where: { pravaChargeId: chargeId },
-      select: { id: true },
-    });
-
-    if (!alreadyCharged) {
-      await prisma.mandate.update({
-        where: { pravaMandateId: request.mandateId },
-        data: { spentCents: { increment: request.amountCents } },
+  return {
+    async get(mandateId) {
+      const found = map.get(mandateId);
+      return found ? { ...found } : null;
+    },
+    async setStatus(mandateId: string, status: MandateStatus) {
+      const found = map.get(mandateId);
+      if (!found) return null;
+      const next = { ...found, status };
+      map.set(mandateId, next);
+      return { ...next };
+    },
+    async consume(mandateId: string, amountCents: Cents) {
+      const found = map.get(mandateId);
+      if (!found) return;
+      map.set(mandateId, {
+        ...found,
+        remainingCents: cents(Math.max(0, found.remainingCents - amountCents)),
       });
-    }
-
-    return {
-      ok: true,
-      chargeId,
-      sessionId,
-      amountCents: request.amountCents,
-      currency: request.currency,
-    };
-  }
-
-  async createMandate(request: CreateMandateRequest): Promise<MandateResult> {
-    const pravaMandateId = derivedId(
-      "mnd",
-      `${request.vendorId}:${request.amountCeilingCents}:${request.passkeyCeremonyId ?? "seed"}`,
-    );
-
-    const existing = await prisma.mandate.findUnique({
-      where: { pravaMandateId },
-    });
-    if (existing) {
-      return { ok: true, mandate: toMandate(existing), error: null };
-    }
-
-    const mirroredAt = await this.mirrorInstant();
-    const row = await prisma.mandate.create({
-      data: {
-        pravaMandateId,
-        vendorId: request.vendorId,
-        merchantId: request.merchantId,
-        amountCeilingCents: request.amountCeilingCents,
-        currency: request.currency,
-        expiresAt: request.expiresAt ? new Date(request.expiresAt) : null,
-        mirroredAt,
-      },
-    });
-
-    return { ok: true, mandate: toMandate(row), error: null };
-  }
-
-  async getMandate(mandateId: string): Promise<MandateResult> {
-    const row = await prisma.mandate.findUnique({
-      where: { pravaMandateId: mandateId },
-    });
-    if (!row) {
-      return { ok: false, mandate: null, error: `No mandate ${mandateId}.` };
-    }
-    return { ok: true, mandate: toMandate(row), error: null };
-  }
-
-  async pauseMandate(mandateId: string): Promise<MandateResult> {
-    return this.setStatus(mandateId, "PAUSED");
-  }
-
-  async resumeMandate(mandateId: string): Promise<MandateResult> {
-    return this.setStatus(mandateId, "ACTIVE");
-  }
-
-  async cancelMandate(mandateId: string): Promise<MandateResult> {
-    return this.setStatus(mandateId, "CANCELLED");
-  }
-
-  async listMandates(): Promise<Mandate[]> {
-    const rows = await prisma.mandate.findMany({
-      orderBy: { pravaMandateId: "asc" },
-    });
-    return rows.map(toMandate);
-  }
-
-  async health(): Promise<HealthResult> {
-    return {
-      healthy: true,
-      detail: "Mock adapter. No external dependency is contacted.",
-    };
-  }
-
-  private async setStatus(
-    mandateId: string,
-    status: MandateStatus,
-  ): Promise<MandateResult> {
-    const existing = await prisma.mandate.findUnique({
-      where: { pravaMandateId: mandateId },
-    });
-    if (!existing) {
-      return { ok: false, mandate: null, error: `No mandate ${mandateId}.` };
-    }
-    const row = await prisma.mandate.update({
-      where: { pravaMandateId: mandateId },
-      data: { status, mirroredAt: await this.mirrorInstant() },
-    });
-    return { ok: true, mandate: toMandate(row), error: null };
-  }
-
-  /**
-   * The demo instant, read from the database rather than the wall clock. The
-   * adapter reads the clock table directly instead of importing `lib/clock`,
-   * because the clock module is a consumer-facing API and the adapter is below
-   * it in the graph.
-   */
-  private async mirrorInstant(): Promise<Date> {
-    const state = await prisma.systemState.findUnique({
-      where: { id: "singleton" },
-    });
-    if (!state) {
-      throw new Error(
-        "Demo clock is not initialized. Run the seed before charging.",
-      );
-    }
-    return state.now;
-  }
+    },
+  };
 }

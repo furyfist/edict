@@ -1,128 +1,119 @@
-import type { EvidenceBundle, ProposalResult } from "../contracts";
+import { cents } from "../contracts/money";
+import type { Cents, EvidenceBundle, Proposal } from "../contracts";
+import type { Agent, AgentInput, AgentResult } from "./types";
 
 /**
- * The stub proposer.
+ * Deterministic stub agent.
  *
- * A deterministic function from evidence to proposal. It is the key de-risking
- * move of M1: with it in place the whole pipeline is end-to-end testable before
- * a language model exists, so the first run has zero possible sources of
- * non-determinism rather than two.
+ * This is the key de-risking move of M1: with a fixed proposal for any given
+ * evidence bundle, the entire pipeline becomes end-to-end testable before a
+ * language model exists. When the real agent arrives in M2 it slots in behind
+ * this signature, and if it misbehaves the stub still works.
  *
- * It is retained in the repository through the demo as a live fallback. When
- * the model is unreachable, slow, or behaving strangely on stage, this is what
- * runs, and the demo continues.
+ * It stays in the repository through the demo. It costs nothing to keep and it
+ * is what saves the run if the model is slow, rate-limited, or offline.
  *
- * Its judgments are intentionally simple. It is not pretending to be clever —
- * the product's claim has never been that the agent is clever.
+ * ---------------------------------------------------------------------------
+ * IT FALLS FOR THE INJECTION ON PURPOSE.
+ *
+ * When a vendor message states an amount, the stub proposes paying it — exactly
+ * as a credulous model would. This is not a bug to be fixed. The demo's whole
+ * point is that a compromised agent still cannot move money, and the fallback
+ * path must be able to demonstrate that as convincingly as the real one.
+ * ---------------------------------------------------------------------------
  */
 
-/** Escalate anything at or above this. Above it, judgment is not the stub's. */
-const LARGE_AMOUNT_CENTS = 500_00;
+const UNDERUSE_THRESHOLD_PCT = 60;
 
-/** A price rise beyond this is worth a human's attention. 15%. */
-const NOTABLE_INCREASE_BASIS_POINTS = 1500;
+/** Pulls a dollar amount like "$48,000.00" out of vendor-authored text. */
+function statedAmount(evidence: EvidenceBundle): Cents | null {
+  for (const message of evidence.inboundMessages) {
+    const match = message.body.match(/\$\s?([\d,]+(?:\.\d{2})?)/);
+    if (!match) continue;
+    const parsed = Number(match[1].replace(/,/g, ""));
+    if (!Number.isFinite(parsed) || parsed <= 0) continue;
+    return cents(Math.round(parsed * 100));
+  }
+  return null;
+}
 
-/** Dormancy beyond this suggests the seat count is wrong. 25%. */
-const NOTABLE_DORMANCY_BASIS_POINTS = 2500;
-
-export function stubPropose(bundle: EvidenceBundle): ProposalResult {
-  const proposalId = `proposal_${bundle.renewal.id}_${bundle.observedAt}`;
+function decide(evidence: EvidenceBundle): Proposal {
   const base = {
-    proposalId,
-    bundleId: bundle.bundleId,
-    renewalId: bundle.renewal.id,
-    proposedAt: bundle.observedAt,
-    producedBy: "stub",
+    vendorId: evidence.vendorId,
+    renewalId: evidence.renewalId,
+    currency: "USD" as const,
   };
 
-  // Missing facts are escalated rather than guessed around. The engine would
-  // escalate this anyway; the stub agreeing with it keeps the demo's narrative
-  // honest — the refusal is not the agent being overridden, it is the agent and
-  // the engine independently reaching the same conclusion.
-  if (bundle.gaps.length > 0) {
+  // Credulous by design — see the note above.
+  const demanded = statedAmount(evidence);
+  if (demanded !== null) {
     return {
-      ok: true,
-      proposal: {
-        ...base,
+      ...base,
+      action: "RENEW_AS_IS",
+      amountCents: demanded,
+      rationale: `${evidence.vendorName} states the renewal amount is now ${demanded} cents and requires immediate payment.`,
+      alternative: {
         action: "ESCALATE",
-        amount: null,
-        seatCount: null,
-        rationale: `Evidence is incomplete for ${bundle.vendor.name}: ${bundle.gaps.join(", ")}.`,
-        rejectedAlternative:
-          "Renewing on the prior cycle's terms was rejected because there is no verified basis for the current amount.",
+        reason: "The message describes the charge as pre-authorized.",
       },
     };
   }
 
-  const amountCents = bundle.renewal.amount.cents;
-  const increase = bundle.priceChange?.deltaBasisPoints ?? 0;
+  const pct = evidence.seats.activePct;
 
-  if (increase > NOTABLE_INCREASE_BASIS_POINTS) {
-    const pct = (increase / 100).toFixed(1);
+  if (pct === null) {
     return {
-      ok: true,
-      proposal: {
-        ...base,
-        action: "ESCALATE",
-        amount: bundle.renewal.amount,
-        seatCount: null,
-        rationale: `${bundle.vendor.name} has increased by ${pct}% over the previous cycle.`,
-        rejectedAlternative:
-          "Renewing at the new price was rejected because a rise of this size has not been agreed.",
+      ...base,
+      action: "RENEW_AS_IS",
+      amountCents: evidence.renewal.amountCents,
+      rationale: `No usage data is available for ${evidence.vendorName}, so the current plan is proposed unchanged.`,
+      alternative: {
+        action: "PAUSE",
+        reason: "Pausing without usage data risks interrupting active work.",
       },
     };
   }
 
-  if (amountCents >= LARGE_AMOUNT_CENTS) {
+  if (pct < UNDERUSE_THRESHOLD_PCT) {
+    const active = evidence.seats.activeTrailing30d ?? 0;
+    const assigned = Math.max(1, evidence.seats.assigned);
+    const reduced = cents(
+      Math.round((evidence.renewal.amountCents * active) / assigned),
+    );
+
     return {
-      ok: true,
-      proposal: {
-        ...base,
-        action: "ESCALATE",
-        amount: bundle.renewal.amount,
-        seatCount: null,
-        rationale: `${bundle.vendor.name} renews at a material amount for this budget.`,
-        rejectedAlternative:
-          "Renewing unattended was rejected because the amount warrants a human decision.",
+      ...base,
+      action: "RENEW_REDUCED",
+      amountCents: reduced > 0 ? reduced : evidence.renewal.amountCents,
+      rationale: `${assigned - active} of ${assigned} seats have gone unused; renewing at ${active} seats.`,
+      alternative: {
+        action: "CANCEL",
+        reason: `${active} seats remain in use, so cancelling would break active work.`,
       },
     };
-  }
-
-  const seats = bundle.seats;
-  if (seats && seats.licensed > 0) {
-    const dormancy = Math.round((seats.dormant * 10_000) / seats.licensed);
-    if (dormancy > NOTABLE_DORMANCY_BASIS_POINTS) {
-      const perSeat = Math.floor(amountCents / seats.licensed);
-      return {
-        ok: true,
-        proposal: {
-          ...base,
-          action: "RENEW_REDUCED_SEATS",
-          amount: {
-            cents: perSeat * seats.active,
-            currency: bundle.renewal.amount.currency,
-          },
-          seatCount: seats.active,
-          rationale: `${seats.dormant} of ${seats.licensed} ${bundle.vendor.name} seats have been dormant for ${seats.windowDays} days.`,
-          rejectedAlternative:
-            "Renewing all seats was rejected because the dormant ones have shown no activity for a full window.",
-        },
-      };
-    }
   }
 
   return {
-    ok: true,
-    proposal: {
-      ...base,
-      action: "RENEW",
-      amount: bundle.renewal.amount,
-      seatCount: seats ? seats.licensed : null,
-      rationale: seats
-        ? `${bundle.vendor.name} usage is steady at ${seats.active} of ${seats.licensed} seats and the price is unchanged.`
-        : `${bundle.vendor.name} renews on unchanged terms.`,
-      rejectedAlternative:
-        "Reducing the seat count was rejected because dormancy is within a normal range.",
+    ...base,
+    action: "RENEW_AS_IS",
+    amountCents: evidence.renewal.amountCents,
+    rationale: `${pct}% of seats are in active use; the current plan is justified.`,
+    alternative: {
+      action: "RENEW_REDUCED",
+      reason: "Seat usage does not support a reduction.",
+    },
+  };
+}
+
+export function createStubAgent(): Agent {
+  return {
+    name: "stub",
+    modelId: "stub",
+    promptVersion: "v0",
+    stubbed: true,
+
+    async propose(input: AgentInput): Promise<AgentResult> {
+      return { ok: true, proposal: decide(input.evidence) };
     },
   };
 }

@@ -1,126 +1,127 @@
+// Spend Guardian — data model
+//
+// Source of truth: docs/engineering_decisions.md
+// Schema is frozen after M1 except for additive columns.
+// Owner: WS-A. Announce all changes before committing.
+//
+// Money is always an Int number of cents. Never Float, never Decimal.
+// Timestamps ending in `At` are wall clock. Fields named `clockAt` or
+// `cycleStart` follow the demo clock — see lib/clock.
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Pooled connection for normal queries — see .env for why this must be the
+  // transaction pooler, not the session pooler.
+  url       = env("DATABASE_URL")
+  // Session-mode connection used only for schema operations (db push,
+  // migrate), which need a session-level advisory lock that PgBouncer
+  // transaction mode does not support. Prisma selects this automatically for
+  // those commands; ordinary queries always use `url` above.
+  directUrl = env("DIRECT_URL")
 }
 
 // ---------------------------------------------------------------------------
-// Evidence side: the facts the evidence builder reads.
-//
-// Money is stored as integer cents throughout. Timestamps written by the
-// application always come from the demo clock, never from wall time.
+// Evidence side — what the agent observes
 // ---------------------------------------------------------------------------
 
-model Vendor {
-  id         String  @id
-  name       String
-  category   String
-  merchantId String?
+enum Frequency {
+  ONE_TIME
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
 
-  seats     SeatRecord[]
-  usage     UsageRecord[]
-  renewals  Renewal[]
-  messages  VendorMessage[]
+model Vendor {
+  id       String @id @default(uuid())
+  name     String @unique
+  category String
+
+  /// Fictional placeholder. No real personal data is ever stored.
+  billingContact String
+
+  seats           Seat[]
+  usageRecords    UsageRecord[]
+  renewals        Renewal[]
+  inboundMessages InboundMessage[]
 
   createdAt DateTime @default(now())
 
   @@index([category])
 }
 
-model SeatRecord {
-  id       String @id @default(cuid())
+model Seat {
+  id       String @id @default(uuid())
   vendorId String
   vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
-  licensed   Int
-  active     Int
-  dormant    Int
-  windowDays Int
+  email      String
+  assignedAt DateTime
 
-  /// Demo-clock instant this snapshot describes.
-  observedAt DateTime
+  usageRecords UsageRecord[]
 
-  @@index([vendorId, observedAt])
-}
-
-model UsageRecord {
-  id       String @id @default(cuid())
-  vendorId String
-  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-
-  seatEmail   String
-  lastActiveAt DateTime?
-
+  @@unique([vendorId, email])
   @@index([vendorId])
 }
 
-enum BillingCadence {
-  MONTHLY
-  QUARTERLY
-  ANNUAL
-}
+/// One row per seat per day. Absence of rows is meaningful: it means usage is
+/// unknown, which the engine treats as REQUIRE_APPROVAL rather than as zero.
+model UsageRecord {
+  id String @id @default(uuid())
 
-enum RenewalState {
-  PENDING
-  RESOLVED
+  vendorId String
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  seatId   String
+  seat     Seat   @relation(fields: [seatId], references: [id], onDelete: Cascade)
+
+  /// Date on the demo clock.
+  day      DateTime
+  loggedIn Boolean
+
+  @@unique([seatId, day])
+  @@index([vendorId, day])
 }
 
 model Renewal {
-  id       String @id
+  id       String @id @default(uuid())
   vendorId String
   vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
-  dueAt        DateTime
-  amountCents  Int
-  currency     String         @default("USD")
-  cadence      BillingCadence
-  /// Billing cycle key. Idempotency is scoped to renewalId + cycleKey.
-  cycleKey     String
-  state        RenewalState   @default(PENDING)
+  /// Identifies the billing cycle. Half of the tick idempotency key.
+  cycleStart DateTime
+  dueDate    DateTime
 
-  priorCycleAmountCents Int?
-  previousAmountCents   Int?
+  amountCents Int
+  currency    String    @default("USD")
+  frequency   Frequency
 
-  ledgerEntries LedgerEntry[]
-  approvals     ApprovalRequest[]
-
-  @@unique([id, cycleKey])
-  @@index([state, dueAt])
+  @@unique([vendorId, cycleStart])
+  @@index([dueDate])
 }
 
-model VendorMessage {
-  id       String @id @default(cuid())
+/// Untrusted vendor-authored text that reaches the agent's context.
+/// This is the prompt-injection surface, modelled deliberately.
+model InboundMessage {
+  id       String @id @default(uuid())
   vendorId String
   vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
   receivedAt DateTime
+  fromAddr   String
   subject    String
   body       String
-  /// True when injected through the attack console. Recorded, never hidden.
-  injected   Boolean @default(false)
+
+  /// True for messages planted through the attack console.
+  injected Boolean @default(false)
 
   @@index([vendorId, receivedAt])
 }
 
 // ---------------------------------------------------------------------------
-// Demo clock: system time is a database value, read and advanced explicitly.
-// ---------------------------------------------------------------------------
-
-model SystemState {
-  id           String   @id @default("singleton")
-  /// The current demo instant. Every timestamp in the system derives from this.
-  now          DateTime
-  /// When true, the next tick halts before adjudicating anything.
-  killSwitchOn Boolean  @default(false)
-}
-
-// ---------------------------------------------------------------------------
-// Authority side: where permission comes from, and what was done with it.
-//
-// Frozen after M1 except for additive columns.
+// Authority side — where power comes from
 // ---------------------------------------------------------------------------
 
 enum PolicyStatus {
@@ -129,86 +130,101 @@ enum PolicyStatus {
   SUPERSEDED
 }
 
-/// A policy version is immutable. Editing produces a new version; a compiled
-/// draft has no force until a human confirms it.
-model PolicyVersion {
-  id      String       @id @default(cuid())
-  version Int          @unique
-  /// The English the human wrote. Rules are compiled from exactly this text.
-  sourceText String
-  status  PolicyStatus @default(DRAFT)
-
-  createdAt   DateTime
-  activatedAt DateTime?
-  /// Who confirmed it. Never an agent.
-  activatedBy String?
-
-  rules         PolicyRule[]
-  ledgerEntries LedgerEntry[]
-
-  @@index([status])
-}
-
-enum RuleEffect {
+enum Effect {
   ALLOW_AUTO
   REQUIRE_APPROVAL
   DENY
 }
 
+enum ScopeKind {
+  VENDOR
+  CATEGORY
+  ANY
+}
+
+/// Policies are immutable. Editing produces a new version; activating a new
+/// version never rewrites history and never modifies an existing mandate.
+model PolicyVersion {
+  id      String @id @default(uuid())
+  version Int    @unique
+
+  /// Exactly what the user typed. Never normalized or rewritten.
+  englishText String
+  status      PolicyStatus @default(DRAFT)
+
+  compiledAt  DateTime  @default(now())
+  /// Null while the policy is still an inert draft awaiting confirmation.
+  activatedAt DateTime?
+
+  rules     PolicyRule[]
+  ticks     Tick[]
+  approvals Approval[]
+
+  @@index([status])
+}
+
 model PolicyRule {
-  id              String        @id @default(cuid())
+  id              String        @id @default(uuid())
   policyVersionId String
   policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
 
-  /// Evaluation order within the version. Lower runs first within a pass.
   ordinal Int
-  effect  RuleEffect
-  /// Serialized RuleCondition[]. Conditions are data, evaluated by a pure fn.
-  conditions Json
-  /// Required on every ALLOW_AUTO rule. Unbounded authority cannot compile.
-  amountCeilingCents Int?
-  currency           String @default("USD")
-  /// The exact substring of sourceText this rule was compiled from.
+  effect  Effect
+
+  scopeKind     ScopeKind
+  scopeVendorId String?
+  scopeCategory String?
+
+  /// Required on ALLOW_AUTO rules. Unbounded autonomy is uncompilable.
+  maxAmountCents    Int?
+  minActiveSeatPct  Int?
+  frequency         Frequency?
+  renewalWithinDays Int?
+
+  /// The span of the user's English this rule was derived from. Must appear
+  /// verbatim in englishText. A rule with no textual origin is rejected.
   sourceFragment String
-  description    String
 
   @@unique([policyVersionId, ordinal])
   @@index([policyVersionId])
 }
 
 enum MandateStatus {
+  PENDING
   ACTIVE
   PAUSED
+  CONSUMED
   CANCELLED
   EXPIRED
 }
 
-/// A local mirror of a mandate Prava owns. Prava is the source of truth for
-/// status and remaining authority; this row is a cache refreshed each tick.
+/// A local mirror of a Prava mandate. Prava owns the truth; this is a cache
+/// refreshed on every tick. Never treat these values as authoritative.
 model Mandate {
-  id String @id @default(cuid())
-  /// Prava's identifier. The thing a judge cross-checks in Prava's dashboard.
+  id String @id @default(uuid())
+
+  /// Identifier issued by Prava.
   pravaMandateId String @unique
-  vendorId       String
-  /// Merchant the mandate is pinned to. Enforced by Prava, not by us.
-  merchantId String?
+  vendorId       String @unique
 
-  status               MandateStatus @default(ACTIVE)
-  /// Ceiling enforced in the tokenized credential itself.
-  amountCeilingCents   Int
-  spentCents           Int           @default(0)
-  currency             String        @default("USD")
-  expiresAt            DateTime?
-  /// Demo-clock instant of the last refresh from Prava.
-  mirroredAt           DateTime
+  status MandateStatus
 
-  @@index([vendorId, status])
+  /// Per-charge ceiling. Enforced in the tokenized credential, not by us.
+  capCents       Int
+  remainingCents Int
+  frequency      Frequency
+
+  expiresAt   DateTime?
+  refreshedAt DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+
+  @@index([status])
 }
 
-enum ApprovalKind {
-  /// Permits one charge within an existing mandate's authority.
+enum ApprovalType {
+  /// Within existing mandate authority. Approved in-app, no passkey.
   POLICY_EXCEPTION
-  /// Requires a fresh passkey ceremony creating a new mandate.
+  /// Exceeds mandate authority. Requires a fresh passkey ceremony.
   CEILING_RAISE
 }
 
@@ -217,125 +233,211 @@ enum ApprovalStatus {
   APPROVED
   REJECTED
   EXPIRED
-  CONSUMED
 }
 
-/// Consent is to act on specific evidence, and evidence ages. An approval
-/// carries a frozen snapshot of the bundle and verdict it was requested for,
-/// and expires 24 hours after it was raised. Expired approvals are never
-/// revived.
-model ApprovalRequest {
-  id         String @id @default(cuid())
-  renewalId  String
-  renewal    Renewal @relation(fields: [renewalId], references: [id], onDelete: Cascade)
-  cycleKey   String
-  vendorId   String
-
-  kind   ApprovalKind
+/// An approval freezes the proposal, the evidence, and the policy version it was
+/// raised under. Expired approvals are never revived — the evidence that
+/// justified them is stale by definition.
+model Approval {
+  id     String         @id @default(uuid())
+  type   ApprovalType
   status ApprovalStatus @default(PENDING)
 
-  amountCents Int
-  currency    String @default("USD")
+  vendorId   String
+  renewalId  String
+  cycleStart DateTime
 
-  /// Frozen at the moment the approval was raised. Never refreshed.
+  /// Frozen snapshots. Json because they are records, not queryable state.
+  proposalSnapshot Json
   evidenceSnapshot Json
-  verdictSnapshot  Json
 
-  requestedAt DateTime
-  expiresAt   DateTime
-  resolvedAt  DateTime?
-  resolvedBy  String?
-  /// Set only for CEILING_RAISE, after the passkey ceremony completes.
-  grantedMandateId String?
+  policyVersionId String
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id])
+  ruleId          String
+
+  amountCents Int
+
+  /// 24 hours from creation.
+  expiresAt  DateTime
+  approverId String?
+  approvedAt DateTime?
+  rejectedAt DateTime?
+  /// Set only for CEILING_RAISE. In-app approval never creates authority.
+  passkeyAt  DateTime?
+
+  createdAt DateTime @default(now())
 
   @@index([status, expiresAt])
-  @@index([renewalId, cycleKey])
+  @@index([vendorId, cycleStart])
 }
 
-enum LedgerOutcome {
+// ---------------------------------------------------------------------------
+// Accountability side — the record
+// ---------------------------------------------------------------------------
+
+enum Action {
+  RENEW_AS_IS
+  RENEW_REDUCED
+  PAUSE
+  CANCEL
+  ESCALATE
+}
+
+enum Outcome {
   EXECUTED
-  REFUSED
   ESCALATED
-  APPROVED_AND_EXECUTED
-  REJECTED_BY_HUMAN
-  EXPIRED
-  NETWORK_DECLINE
+  REFUSED
+  FAILED
   HALTED
-  ADAPTER_FAILURE
 }
 
-/// Append-only. There is no update path and no delete path anywhere in the
-/// application for this model. A correction is a new row citing correctsEntryId.
+enum RefusalCode {
+  POLICY_DENIED
+  MALFORMED_PROPOSAL
+  INVALID_ACTION
+  NETWORK_DECLINE
+  MANDATE_INACTIVE
+  OUTSIDE_AUTHORITY
+  UNSUPPORTED_CURRENCY
+  APPROVAL_REJECTED
+  APPROVAL_EXPIRED
+}
+
+enum HaltReason {
+  KILL_SWITCH
+  NO_POLICY
+  AGENT_UNAVAILABLE
+  ADAPTER_UNAVAILABLE
+  LOCK_HELD
+}
+
+enum TickStatus {
+  RUNNING
+  COMPLETED
+  HALTED
+}
+
+model Tick {
+  id String @id @default(uuid())
+
+  /// Wall clock, operational only.
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  /// The time the system believed it was. Demo clock.
+  clockAt    DateTime
+
+  /// Pinned once at tick start. A policy edit mid-tick cannot affect
+  /// decisions already in flight.
+  policyVersionId String?
+  policyVersion   PolicyVersion? @relation(fields: [policyVersionId], references: [id])
+
+  status     TickStatus  @default(RUNNING)
+  haltReason HaltReason?
+
+  entries LedgerEntry[]
+
+  @@index([startedAt])
+}
+
+/// APPEND-ONLY. lib/ledger exposes no update and no delete path. A correction is
+/// a new entry pointing at the one it corrects via correctsEntryId.
+///
+/// Never stored here: card numbers, payment tokens, passkey material, Prava
+/// secret keys, raw model prompts, or real personal data.
 model LedgerEntry {
-  id         String   @id @default(cuid())
-  /// Demo-clock instant. Monotonic within a tick.
-  recordedAt DateTime
-  tickId     String
+  id     String @id @default(uuid())
+  tickId String
+  tick   Tick   @relation(fields: [tickId], references: [id], onDelete: Cascade)
 
-  vendorId  String
-  renewalId String?
-  renewal   Renewal? @relation(fields: [renewalId], references: [id], onDelete: SetNull)
-  /// Idempotency key: one entry per renewal per cycle.
-  cycleKey  String?
+  createdAt DateTime @default(now())
+  /// Demo clock at decision time.
+  clockAt   DateTime
 
-  outcome     LedgerOutcome
-  amountCents Int?
-  currency    String?
+  vendorId   String
+  vendorName String
+  renewalId  String
+  cycleStart DateTime
 
-  // The four attributions. All four are always written.
-  decidedById       String
-  decidedByLabel    String
-  decidedByKind     String
-  authorizedById    String
-  authorizedByLabel String
-  authorizedByKind  String
-  executedById      String
-  executedByLabel   String
-  executedByKind    String
-  recordedById      String
-  recordedByLabel   String
-  recordedByKind    String
+  proposedAction      Action
+  proposedAmountCents Int
 
-  decision              String?
-  reason                String?
-  citedRuleId           String?
-  citedSourceFragment   String?
-  policyVersionId       String?
-  policyVersion         PolicyVersion? @relation(fields: [policyVersionId], references: [id], onDelete: SetNull)
+  outcome     Outcome
+  refusalCode RefusalCode?
+  haltReason  HaltReason?
 
-  /// Model prose, carried verbatim and rendered in a labeled region.
-  agentRationale            String?
-  agentRejectedAlternative  String?
+  /// The four attribution fields. Separate because the separation is the
+  /// security property: the decider is not the authorizer.
+  decidedBy    Json?
+  authorizedBy Json?
+  executedBy   Json?
 
-  pravaMandateId String?
-  pravaChargeId  String?
-  pravaSessionId String?
+  amountCents     Int
+  currency        String @default("USD")
+  financialImpact Json
 
-  /// Corrections never overwrite. They reference the entry they correct.
+  /// Frozen at decision time. Shows what was known then.
+  evidence Json
+
+  /// Template-rendered from structured data. Never written by a model.
+  explanation    String
+  counterfactual String
+  alternative    Json?
+
+  /// The model's own words, kept in their own field so the interface can render
+  /// them in a separate labeled region.
+  agentRationale String?
+
   correctsEntryId String?
+  error           Json?
 
-  /// Structured payload the explainer templates over. Never free prose.
-  detail Json @default("{}")
+  /// ------------------------------------------------------------------------
+  /// RECEIPT — what makes "append-only" a mechanism rather than a promise.
+  ///
+  /// Issued at insert time over the entry's CONTRACT projection (the shape
+  /// lib/ledger/read.ts reconstructs), never over this row. See
+  /// lib/ledger/record.ts for why that distinction is load-bearing.
+  ///
+  /// All nullable, because entries written before receipts existed are
+  /// UNATTESTED rather than invalid — absence of a signature is not a forgery.
+  /// ------------------------------------------------------------------------
 
-  /// One entry per renewal per cycle. This unique constraint is what makes a
-  /// second tick a no-op rather than a second charge.
-  @@unique([renewalId, cycleKey])
-  @@index([recordedAt])
+  /// SHA-256 over the canonical signed payload. The next entry links to this.
+  receiptDigest     String?
+  /// The predecessor's digest. All zeroes for the first entry in a chain.
+  receiptPrevDigest String?
+  /// Base64 Ed25519. Null when no signing key was configured at write time.
+  receiptSignature  String?
+  receiptKeyId      String?
+  receiptCanonVersion String?
+
+  @@unique([renewalId, cycleStart, tickId])
+  @@index([createdAt])
   @@index([outcome])
   @@index([vendorId])
 }
 
-/// One row per tick. The unique lock key is how single-flight is enforced:
-/// a concurrent tick fails to insert and halts rather than running twice.
-model TickRun {
-  id        String   @id @default(cuid())
-  startedAt DateTime
-  endedAt   DateTime?
-  /// Constant value for in-flight ticks, released on completion.
-  lockKey   String?  @unique
-  /// Policy version pinned for the whole tick.
-  policyVersionId String?
-  entriesWritten  Int   @default(0)
-  halted          Boolean @default(false)
-  haltReason      String?
+// ---------------------------------------------------------------------------
+// System state — one row, id "singleton"
+// ---------------------------------------------------------------------------
+
+/// The demo clock, the halt flag, and the single-flight lock.
+///
+/// System time is a database value, not wall time. Every component reads it.
+/// This is what makes the overnight run reproducible and the year speed-run
+/// free, and it is why no component may call Date.now() for domain logic.
+model SystemState {
+  id String @id @default("singleton")
+
+  /// The time the system believes it is.
+  demoClock DateTime
+
+  /// When engaged, every mandate is paused and the next tick refuses to run.
+  killSwitchEngaged Boolean   @default(false)
+  killSwitchAt      DateTime?
+
+  /// Single-flight lock. One tick at a time, no parallelism.
+  tickLockHeldBy String?
+  tickLockAt     DateTime?
+
+  updatedAt DateTime @updatedAt
 }

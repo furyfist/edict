@@ -1,77 +1,53 @@
-import type { IsoTimestamp, Money } from "./common";
+import type { Cents, Currency } from "./money";
+import type { Action } from "./enums";
 
 /**
- * Contract 2 — the proposal.
+ * CONTRACT 2 — Proposal
  *
- * What the agent produces. It is a request, never an authorization. Nothing in
- * this shape can cause money to move; the outcome router only ever acts on a
- * verdict, and a verdict comes from the pure engine.
+ * The agent's output, and the boundary of everything the language model is
+ * permitted to do.
  *
- * The rationale and rejectedAlternative fields are model prose. They are
- * carried through to the UI in a separately labeled region and are never
- * parsed, matched against, or used by the engine.
+ * A proposal is advisory. It is not a command, not an authorization, and not an
+ * instruction to the payment adapter. It is discarded whenever the policy engine
+ * says so, and the model has no path to money whether or not it is discarded.
+ *
+ * Note what is deliberately absent: no evidence claims. The model does not get
+ * to restate facts, because the engine would ignore them anyway. Rationale and
+ * alternative are prose for humans to read, never inputs to a decision.
  */
 
-export const PROPOSED_ACTIONS = [
-  "RENEW",
-  "RENEW_REDUCED_SEATS",
-  "PAUSE",
-  "CANCEL",
-  "ESCALATE",
-] as const;
-export type ProposedAction = (typeof PROPOSED_ACTIONS)[number];
-
-export function isProposedAction(value: unknown): value is ProposedAction {
-  return (
-    typeof value === "string" &&
-    (PROPOSED_ACTIONS as readonly string[]).includes(value)
-  );
+export interface ProposalAlternative {
+  action: Action;
+  /** Why this option lost. Exactly one alternative — three would be noise. */
+  reason: string;
 }
 
 export interface Proposal {
-  proposalId: string;
-  /** The bundle this proposal was formed from. The engine re-derives facts. */
-  bundleId: string;
+  vendorId: string;
   renewalId: string;
-  proposedAt: IsoTimestamp;
 
-  action: ProposedAction;
-  /** Null for actions that move no money (PAUSE, CANCEL, ESCALATE). */
-  amount: Money | null;
-  /** Only meaningful for RENEW_REDUCED_SEATS. */
-  seatCount: number | null;
+  action: Action;
+  /**
+   * Proposed charge in cents. Validated as a positive integer on receipt;
+   * anything else becomes MALFORMED_PROPOSAL.
+   */
+  amountCents: Cents;
+  currency: Currency;
 
-  /** One sentence. Model prose. Never parsed. */
+  /** One sentence. Rendered in a separate, labeled region as model output. */
   rationale: string;
-  /** One alternative the agent considered and rejected. Model prose. */
-  rejectedAlternative: string;
-
-  /** Which proposer produced this — "stub" or a model identifier. */
-  producedBy: string;
+  alternative: ProposalAlternative;
 }
 
 /**
- * Why a proposal could not be formed. A refusal at this boundary is an
- * ordinary outcome, not an error: it flows into the pipeline and is adjudicated
- * like anything else, which is what keeps a bad model response from being a
- * crash.
+ * Provenance of a proposal, recorded for attribution. Kept separate from the
+ * proposal itself so the shape the engine sees carries no authority signals.
  */
-export const PROPOSAL_FAILURES = [
-  "MALFORMED_PROPOSAL",
-  "MODEL_UNREACHABLE",
-  "MODEL_TIMEOUT",
-] as const;
-export type ProposalFailureReason = (typeof PROPOSAL_FAILURES)[number];
-
-export interface ProposalFailure {
-  bundleId: string;
-  renewalId: string;
-  reason: ProposalFailureReason;
-  /** Truncated, escaped detail for the ledger. Never re-fed to the model. */
-  detail: string;
-  producedBy: string;
+export interface ProposalOrigin {
+  /** Model identifier, e.g. the exact model string used. */
+  modelId: string;
+  /** Bumped whenever the agent prompt changes, so entries stay comparable. */
+  promptVersion: string;
+  /** True when produced by the deterministic stub rather than a live model. */
+  stubbed: boolean;
 }
-
-export type ProposalResult =
-  | { ok: true; proposal: Proposal }
-  | { ok: false; failure: ProposalFailure };

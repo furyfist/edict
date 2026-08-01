@@ -1,89 +1,145 @@
-import type { Actor, IsoTimestamp, Money } from "./common";
-import type { VerdictDecision, VerdictReason } from "./verdict";
+import type { Cents, Currency } from "./money";
+import type { Action, HaltReason, Outcome, RefusalCode } from "./enums";
+import type { EvidenceBundle } from "./evidence";
+import type { ProposalAlternative } from "./proposal";
 
 /**
- * Contract 5 — the ledger entry.
+ * CONTRACT 5 — LedgerEntry
  *
- * Append-only. There is no update shape and no delete shape in this file, and
- * that absence is the contract. A correction is a new entry carrying
- * `correctsEntryId`.
+ * The record of one adjudication. Append-only: no update path, no delete path.
+ * A correction is a new entry pointing at the one it corrects.
  *
- * Every entry names four separate actors: who decided, who authorized, who
- * executed, who recorded. That separation is the product.
+ * The four attribution fields are the point of this shape. They are separate
+ * because the separation IS the security property — the decider is not the
+ * authorizer, and a reader must be able to see that at a glance.
  */
 
-export const LEDGER_OUTCOMES = [
-  "EXECUTED",
-  "REFUSED",
-  "ESCALATED",
-  "APPROVED_AND_EXECUTED",
-  "REJECTED_BY_HUMAN",
-  "EXPIRED",
-  "NETWORK_DECLINE",
-  "HALTED",
-  "ADAPTER_FAILURE",
-] as const;
-export type LedgerOutcome = (typeof LEDGER_OUTCOMES)[number];
+/** Who decided. Always the agent, and never sufficient on its own. */
+export interface DecidedBy {
+  modelId: string;
+  promptVersion: string;
+  stubbed: boolean;
+}
 
-/** Outcomes in which no money moved. Used by the refusal filter. */
-export const REFUSAL_OUTCOMES: readonly LedgerOutcome[] = [
-  "REFUSED",
-  "ESCALATED",
-  "REJECTED_BY_HUMAN",
-  "EXPIRED",
-  "NETWORK_DECLINE",
-  "HALTED",
-  "ADAPTER_FAILURE",
-];
+/**
+ * Who permitted it. A policy version and one rule, plus a human when the action
+ * required approval.
+ *
+ * `passkeyAt` is set only for CEILING_RAISE approvals. In-app approval satisfies
+ * policy; it never creates authority.
+ */
+export interface AuthorizedBy {
+  policyVersionId: string;
+  policyVersion: number;
+  ruleId: string;
+  ruleOrdinal: number;
+  /** The user's own words, rendered inline wherever this entry is shown. */
+  sourceFragment: string;
 
-/** Identifiers issued by Prava. Present only when the network was reached. */
-export interface PravaReferences {
-  mandateId: string | null;
+  approverId: string | null;
+  approvalId: string | null;
+  /** ISO datetime of the passkey ceremony. Null for in-app approvals. */
+  passkeyAt: string | null;
+}
+
+/** Who executed it. Only ever Prava, through the single payment boundary. */
+export interface ExecutedBy {
+  provider: "prava";
+  mandateId: string;
+  /** Null when the charge was attempted but not completed. */
   chargeId: string | null;
-  sessionId: string | null;
+  status: string;
+}
+
+export interface FinancialImpact {
+  /** What actually moved. Zero on anything other than EXECUTED. */
+  chargedCents: Cents;
+  /** What would have been paid had the agent done nothing. */
+  counterfactualCents: Cents;
+  /** counterfactual − charged. Negative is possible and is not an error. */
+  savedCents: number;
+}
+
+export interface LedgerError {
+  code: string;
+  message: string;
+}
+
+/**
+ * The receipt attached to an entry.
+ *
+ * NOT part of the signed record — a signature cannot cover itself. Everything
+ * else on `LedgerEntry` is. See `toSignedRecord` in lib/ledger/record.ts.
+ */
+export interface LedgerReceipt {
+  canonVersion: string;
+  prevDigest: string;
+  digest: string;
+  signature: string | null;
+  keyId: string | null;
 }
 
 export interface LedgerEntry {
   id: string;
-  /** Demo-clock instant. Monotonic within a tick. */
-  recordedAt: IsoTimestamp;
-  /** The tick that produced this entry. */
   tickId: string;
+  /** Wall clock. Operational only. */
+  createdAt: string;
+  /** Demo clock. This is the time the system believed it was. */
+  clockAt: string;
 
   vendorId: string;
-  renewalId: string | null;
-  /** Idempotency key: one entry per renewal per cycle. */
-  cycleKey: string | null;
+  vendorName: string;
+  renewalId: string;
+  cycleStart: string;
 
-  outcome: LedgerOutcome;
-  amount: Money | null;
+  proposedAction: Action;
+  proposedAmountCents: Cents;
 
-  /* --- the four attributions. All four are always present. --- */
-  decidedBy: Actor;
-  authorizedBy: Actor;
-  executedBy: Actor;
-  recordedBy: Actor;
+  outcome: Outcome;
+  refusalCode: RefusalCode | null;
+  haltReason: HaltReason | null;
 
-  /* --- the decision that produced this entry --- */
-  decision: VerdictDecision | null;
-  reason: VerdictReason | null;
-  citedRuleId: string | null;
-  citedSourceFragment: string | null;
-  policyVersionId: string | null;
+  decidedBy: DecidedBy | null;
+  authorizedBy: AuthorizedBy | null;
+  executedBy: ExecutedBy | null;
 
-  /** Model prose, carried verbatim and rendered in a labeled region. */
+  amountCents: Cents;
+  currency: Currency;
+  financialImpact: FinancialImpact;
+
+  /** Frozen at decision time. Shows what was known then, not what is known now. */
+  evidence: EvidenceBundle;
+
+  /** Template-rendered from structured data. Never written by a model. */
+  explanation: string;
+  /** "Do nothing and you pay $X on <date>." Template-rendered. */
+  counterfactual: string;
+  alternative: ProposalAlternative | null;
+
+  /**
+   * The model's own words, kept in its own field so the interface can render it
+   * in a separate labeled region. A reader must always be able to tell which
+   * parts of the screen a language model wrote.
+   */
   agentRationale: string | null;
-  agentRejectedAlternative: string | null;
 
-  prava: PravaReferences;
-
-  /** Set when this entry corrects a prior one. Corrections never overwrite. */
+  /** Set when this entry corrects an earlier one. The ledger is append-only. */
   correctsEntryId: string | null;
+  error: LedgerError | null;
 
-  /** Structured payload the explainer templates over. Never free prose. */
-  detail: Record<string, unknown>;
+  /**
+   * Null for entries written before receipts existed. Those render as
+   * UNATTESTED — never as verified, and never as invalid.
+   */
+  receipt: LedgerReceipt | null;
 }
 
+/** Entries shown in the refusal view — what the agent would not do. */
 export function isRefusal(entry: LedgerEntry): boolean {
-  return REFUSAL_OUTCOMES.includes(entry.outcome);
+  return entry.outcome === "REFUSED";
+}
+
+/** True when money actually moved. */
+export function movedMoney(entry: LedgerEntry): boolean {
+  return entry.outcome === "EXECUTED" && entry.financialImpact.chargedCents > 0;
 }

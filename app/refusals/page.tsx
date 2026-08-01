@@ -1,67 +1,40 @@
-import { formatMoney } from "@/lib/contracts";
-import { listExplainedRefusals, totals } from "@/lib/ledger";
-import { LedgerRow } from "../components/LedgerRow";
-import { DbError, Empty, Panel, PageHeader } from "../components/ui";
+import { listPresentedRefusals } from "@/lib/ledger";
+import type { PresentedEntry } from "@/lib/ledger";
+import { EntryList } from "../_components/entry-list";
+import { DbUnavailable, PageHeader } from "../_components/page-header";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Refusals — what the agent was not allowed to do.
+ * Refusals — what the agent would not do.
  *
- * This is a filter over the one ledger model, not a second model. That matters
- * beyond tidiness: two models could disagree, and the first time they did, the
- * ledger would stop being evidence of anything. Everything shown here is also
- * on the ledger page, and every entry here reached this view by having an
- * outcome in which no money moved.
+ * This is the SAME ledger, filtered. One data model, two doors. Every product
+ * shows what it did; showing restraint is the most trust-generating surface
+ * available, and it is nearly free because the data already exists.
  */
 export default async function RefusalsPage() {
-  let items;
-  let counts;
+  let entries: PresentedEntry[] = [];
+  let unavailable = false;
 
   try {
-    [items, counts] = await Promise.all([listExplainedRefusals(100), totals()]);
+    entries = await listPresentedRefusals(100);
   } catch {
-    return (
-      <>
-        <PageHeader title="Refusals" question="What was refused?" />
-        <DbError />
-      </>
-    );
+    unavailable = true;
   }
 
   return (
-    <>
+    <section>
       <PageHeader
         title="Refusals"
-        question="What was the agent not allowed to do?"
-      >
-        <div style={{ fontSize: 12, textAlign: "right" }}>
-          <div style={{ color: "var(--muted)" }}>Not spent</div>
-          <div className="mono" style={{ fontSize: 15, color: "var(--deny)" }}>
-            {formatMoney({ cents: counts.refusedCents, currency: "USD" })}
-          </div>
-        </div>
-      </PageHeader>
+        question="What the agent would not do. Each one names the rule that stopped it — and nothing was charged."
+        right={
+          unavailable ? null : (
+            <p className="text-xs text-neutral-500">{entries.length} refused</p>
+          )
+        }
+      />
 
-      <p
-        style={{
-          color: "var(--muted)",
-          fontSize: 13,
-          marginTop: 0,
-          maxWidth: 640,
-        }}
-      >
-        Every entry here is also on the ledger. This view is a filter over the
-        same records — the outcomes in which nothing was charged.
-      </p>
-
-      <Panel padded={false}>
-        {items.length === 0 ? (
-          <Empty>Nothing has been refused yet.</Empty>
-        ) : (
-          items.map((item) => <LedgerRow key={item.entry.id} item={item} />)
-        )}
-      </Panel>
-    </>
+      {unavailable ? <DbUnavailable /> : <EntryList entries={entries} />}
+    </section>
   );
 }

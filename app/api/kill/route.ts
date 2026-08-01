@@ -1,139 +1,91 @@
 import { NextResponse } from "next/server";
-import { getClockState, now, setKillSwitch } from "@/lib/clock";
-import { NOBODY, TICK, appendEntry, human } from "@/lib/ledger";
-import { pauseAllMandates } from "@/lib/prava/mandates";
+import { db } from "@/lib/db/client";
+import { getClock, wallNow } from "@/lib/clock";
+import { paymentBoundary } from "@/lib/prava";
 
 export const dynamic = "force-dynamic";
 
 /**
  * The kill switch.
  *
- * Two effects, in this order, and the order is the design:
+ * Engaging it does two things, in this order:
  *
- *   1. Pause every active mandate at the network. This is what actually stops
- *      money. It happens first because it is the part that does not depend on
- *      our code continuing to run correctly — once a mandate is paused at
- *      Prava, a charge is declined there, whatever this application does next.
+ *   1. Sets the halt flag, so the next tick refuses to run.
+ *   2. Pauses every active mandate at Prava, so the agent's authority is
+ *      withdrawn at the source rather than merely ignored locally.
  *
- *   2. Set the local halt flag, so the next tick stops before adjudicating.
- *      This is the tidy part, and it is second because it is the weaker
- *      guarantee: a flag in our database only works if our code reads it.
+ * Order matters. Setting the flag first means that even if pausing mandates
+ * partially fails, no further tick will run — the system fails safe rather than
+ * continuing on the assumption that step two worked.
  *
- * An operator reaching for this is having a bad day and does not want to learn
- * about our failure modes. So a partial failure is reported honestly and
- * loudly — if three mandates paused and one did not, the response says which
- * one, because "mostly stopped" is not a state anyone can act on without
- * knowing the remainder.
+ * This is the most reassuring object in the product and it is reachable from
+ * every page for the same reason the sandbox banner is undismissable: safety
+ * affordances should never require going to look for them.
  */
-export async function POST(request: Request): Promise<NextResponse> {
-  let engagedBy: string;
-  let engage = true;
-
+export async function POST(request: Request) {
+  let body: { engage?: unknown };
   try {
-    const body = (await request.json()) as {
-      engagedBy?: unknown;
-      engage?: unknown;
-    };
-    if (typeof body.engagedBy !== "string" || !body.engagedBy.trim()) {
-      return NextResponse.json(
-        { error: "engagedBy is required — this action is always attributed" },
-        { status: 400 },
-      );
-    }
-    engagedBy = body.engagedBy.trim();
-    if (typeof body.engage === "boolean") engage = body.engage;
+    body = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
 
-  const instant = await now();
-  const operator = human(engagedBy, engagedBy);
-
-  if (!engage) {
-    // Releasing the halt does not resume mandates. Resuming payment authority
-    // is a separate, deliberate act per mandate — a single button that both
-    // restarts the system and re-arms every credential is the wrong shape for
-    // the moment after an incident.
-    await setKillSwitch(false);
-    await appendEntry({
-      recordedAt: instant,
-      tickId: `kill_release_${instant.toISOString()}`,
-      vendorId: "system",
-      renewalId: null,
-      cycleKey: null,
-      outcome: "HALTED",
-      amount: null,
-      decidedBy: operator,
-      authorizedBy: operator,
-      executedBy: NOBODY,
-      recordedBy: TICK,
-      detail: {
-        killSwitch: "RELEASED",
-        note: "Ticks may run again. Paused mandates were not resumed — resume each one deliberately.",
-      },
-    });
-
-    return NextResponse.json({
-      ok: true,
-      killSwitchOn: false,
-      note: "Ticks may run again. Mandates remain paused until resumed individually.",
-    });
+  if (typeof body.engage !== "boolean") {
+    return NextResponse.json(
+      { error: "engage must be a boolean" },
+      { status: 400 },
+    );
   }
 
-  // Money first.
-  const { paused, failed } = await pauseAllMandates();
+  const clock = await getClock();
 
-  // Then the halt flag.
-  await setKillSwitch(true);
-
-  await appendEntry({
-    recordedAt: instant,
-    tickId: `kill_${instant.toISOString()}`,
-    vendorId: "system",
-    renewalId: null,
-    cycleKey: null,
-    outcome: "HALTED",
-    amount: null,
-    decidedBy: operator,
-    authorizedBy: operator,
-    executedBy: NOBODY,
-    recordedBy: TICK,
-    detail: {
-      killSwitch: "ENGAGED",
-      mandatesPaused: paused,
-      mandatesFailed: failed,
-      note:
-        failed.length === 0
-          ? "Every active mandate is paused and the next tick will halt."
-          : `${paused.length} mandates paused; ${failed.length} could not be reached and may still authorize charges.`,
+  await db.systemState.update({
+    where: { id: "singleton" },
+    data: {
+      killSwitchEngaged: body.engage,
+      killSwitchAt: body.engage ? clock : null,
     },
   });
 
-  const state = await getClockState();
+  const boundary = paymentBoundary();
+  const mandates = await db.mandate.findMany({
+    where: { status: body.engage ? "ACTIVE" : "PAUSED" },
+  });
 
-  return NextResponse.json(
-    {
-      ok: failed.length === 0,
-      killSwitchOn: state.killSwitchOn,
-      mandatesPaused: paused,
-      mandatesFailed: failed,
-      note:
-        failed.length === 0
-          ? "Every active mandate is paused. The next tick will halt."
-          : "Some mandates could not be paused. They may still authorize charges — pause them directly in Prava.",
-    },
-    // A partial failure is not a 200. An operator scripting against this must
-    // be able to tell the difference without reading the body.
-    { status: failed.length === 0 ? 200 : 502 },
-  );
+  const changed: string[] = [];
+  const failed: string[] = [];
+
+  for (const mandate of mandates) {
+    const snapshot = body.engage
+      ? await boundary.pauseMandate(mandate.pravaMandateId)
+      : await boundary.resumeMandate(mandate.pravaMandateId);
+
+    if (!snapshot) {
+      failed.push(mandate.pravaMandateId);
+      continue;
+    }
+
+    await db.mandate.update({
+      where: { vendorId: mandate.vendorId },
+      data: { status: snapshot.status, refreshedAt: wallNow() },
+    });
+    changed.push(mandate.pravaMandateId);
+  }
+
+  return NextResponse.json({
+    ok: true,
+    engaged: body.engage,
+    mandatesChanged: changed.length,
+    // Reported, never swallowed. A partial pause is exactly the situation an
+    // operator needs to know about.
+    mandatesFailed: failed,
+  });
 }
 
-/** Current halt state, for the global halted chrome. */
-export async function GET(): Promise<NextResponse> {
-  try {
-    const state = await getClockState();
-    return NextResponse.json({ killSwitchOn: state.killSwitchOn });
-  } catch {
-    return NextResponse.json({ killSwitchOn: false, error: "clock uninitialized" });
-  }
+export async function GET() {
+  const state = await db.systemState.findUnique({ where: { id: "singleton" } });
+  return NextResponse.json({
+    engaged: state?.killSwitchEngaged ?? false,
+    since: state?.killSwitchAt ?? null,
+  });
 }
