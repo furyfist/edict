@@ -3,6 +3,8 @@ import { formatCents } from "@/lib/contracts/money";
 import type { Cents } from "@/lib/contracts";
 import { addDays, daysBetween, getClock, startOfDay } from "@/lib/clock";
 import { PageHeader } from "@/app/_components/layout/page-header";
+import { PageSections } from "@/app/_components/layout/section";
+import { StatGrid, StatTile } from "@/app/_components/layout/stat-tile";
 import { DbUnavailable } from "@/app/_components/feedback/alert";
 import { EmptyState } from "@/app/_components/feedback/empty-state";
 import { Badge } from "@/app/_components/ui/badge";
@@ -158,6 +160,15 @@ export default async function VendorsPage() {
     unavailable = true;
   }
 
+  // The page's own question, answered above the table. `usageUnknown` is the
+  // one that matters most here: it is the count of vendors the engine cannot
+  // reason about, and it is the distinction this whole page exists to preserve.
+  const underMandate = rows.filter((r) => r.hasMandate).length;
+  const usageUnknown = rows.filter((r) => r.seatsActive === null).length;
+  const upcoming = rows.filter(
+    (r) => r.dueInDays !== null && r.dueInDays >= 0,
+  ).length;
+
   return (
     <>
       <PageHeader
@@ -168,7 +179,36 @@ export default async function VendorsPage() {
       {unavailable ? (
         <DbUnavailable />
       ) : (
-        <TableFrame
+        <PageSections>
+          {rows.length > 0 ? (
+            <StatGrid>
+              <StatTile label="Vendors" value={rows.length} />
+              <StatTile
+                label="Under mandate"
+                value={`${underMandate}/${rows.length}`}
+                tone={underMandate < rows.length ? "warn" : "neutral"}
+                caption={
+                  underMandate < rows.length
+                    ? `${rows.length - underMandate} outside authority`
+                    : undefined
+                }
+              />
+              <StatTile
+                label="Usage unknown"
+                value={usageUnknown}
+                tone={usageUnknown ? "medium" : "neutral"}
+                caption={usageUnknown ? "evidence incomplete" : undefined}
+              />
+              <StatTile
+                label="Renewals ahead"
+                value={upcoming}
+                tone={upcoming ? "medium" : "neutral"}
+                caption={upcoming ? "still to be decided" : "none pending"}
+              />
+            </StatGrid>
+          ) : null}
+
+          <TableFrame
           isEmpty={rows.length === 0}
           empty={
             <EmptyState
@@ -234,11 +274,25 @@ export default async function VendorsPage() {
                   ) : row.dueInDays < 0 ? (
                     // A due date behind the demo clock is a real state, not a
                     // rendering slip: the cycle was adjudicated and the clock
-                    // has since moved on. "-27d" in a column headed Due reads
-                    // as a bug at a glance, so say what it means and keep the
-                    // magnitude.
-                    <span className="text-warn">
+                    // has since moved on. Say what it means and keep the
+                    // magnitude — but do NOT tint it.
+                    //
+                    // Seven of eight vendors sit in this state, and a colour
+                    // worn by the majority has stopped being a signal. The
+                    // words carry the fact; the tint is spent below, on the one
+                    // row where something is about to happen.
+                    <span
+                      className="text-text-muted"
+                      title="Already adjudicated — the demo clock has since moved past this due date."
+                    >
                       past due {Math.abs(row.dueInDays)}d
+                    </span>
+                  ) : row.dueInDays <= 7 ? (
+                    <span
+                      className="text-warn"
+                      title="Due within the week — the agent will act on this renewal next."
+                    >
+                      {row.dueInDays}d
                     </span>
                   ) : (
                     `${row.dueInDays}d`
@@ -255,7 +309,8 @@ export default async function VendorsPage() {
               </TR>
             ))}
           </TBody>
-        </TableFrame>
+          </TableFrame>
+        </PageSections>
       )}
     </>
   );

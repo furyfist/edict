@@ -3,6 +3,8 @@ import { getClock } from "@/lib/clock";
 import { formatCents } from "@/lib/contracts/money";
 import type { Cents, EvidenceBundle, Proposal } from "@/lib/contracts";
 import { PageHeader } from "@/app/_components/layout/page-header";
+import { PageSections } from "@/app/_components/layout/section";
+import { StatGrid, StatTile } from "@/app/_components/layout/stat-tile";
 import { DbUnavailable } from "@/app/_components/feedback/alert";
 import { EmptyState } from "@/app/_components/feedback/empty-state";
 import { ModelOutput } from "@/app/_components/domain/model-output";
@@ -56,6 +58,11 @@ export default async function ApprovalsPage() {
   }
 
   const pending = approvals.filter((a) => a.status === "PENDING");
+  const approved = approvals.filter((a) => a.status === "APPROVED").length;
+  const rejected = approvals.filter((a) => a.status === "REJECTED").length;
+  // Expired is its own fact, not a rejection. Nobody decided — the window ran
+  // out, which is a different thing to have happened and is worth a colour.
+  const expired = approvals.filter((a) => a.status === "EXPIRED").length;
 
   return (
     <>
@@ -78,7 +85,25 @@ export default async function ApprovalsPage() {
           description="Every proposal the agent has made was either within its authority or refused outright. Nothing is being held for a decision."
         />
       ) : (
-        <ul className="flex flex-col gap-3">
+        <PageSections>
+          <StatGrid>
+            <StatTile
+              label="Needs decision"
+              value={pending.length}
+              tone={pending.length ? "medium" : "neutral"}
+              caption={pending.length ? "waiting on you" : "nothing held"}
+            />
+            <StatTile label="Approved" value={approved} />
+            <StatTile label="Rejected" value={rejected} />
+            <StatTile
+              label="Expired"
+              value={expired}
+              tone={expired ? "warn" : "neutral"}
+              caption={expired ? "decided by the clock" : undefined}
+            />
+          </StatGrid>
+
+          <ul className="flex flex-col gap-3">
           {approvals.map((approval) => {
             const proposal = approval.proposalSnapshot as Proposal | null;
             const evidence = approval.evidenceSnapshot as EvidenceBundle | null;
@@ -128,7 +153,8 @@ export default async function ApprovalsPage() {
               </li>
             );
           })}
-        </ul>
+          </ul>
+        </PageSections>
       )}
     </>
   );
