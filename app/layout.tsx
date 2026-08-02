@@ -1,22 +1,46 @@
 import type { Metadata } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import { SandboxBanner } from "./_components/sandbox-banner";
-import { ClockDisplay } from "./_components/clock-display";
-import { Nav } from "./_components/nav";
-import { HaltedBanner } from "./_components/halted-banner";
+
+/**
+ * Two families, self-hosted at build time — no CDN request at runtime, because
+ * the product must work air-gapped and a render-blocking third-party font is
+ * the slowest thing a page can wait on.
+ *
+ * Inter is loaded as a VARIABLE font, which is what makes the 550 weight
+ * available. `text-body-strong` is 550 rather than 600: emphasis without the
+ * visual shout of semibold, and the reason the sidebar reads as legible rather
+ * than heavy.
+ *
+ * JetBrains Mono carries every machine fact in the product — ids, digests,
+ * signatures, mandate references. The font itself is the type signal.
+ */
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-jetbrains-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  title: "Edict",
+  title: "Edict — delegated authority for an agent that spends",
   description:
-    "An agent that holds a software budget under delegated, network-enforced authority.",
+    "An agent that holds a software budget under delegated, network-enforced authority. It cannot exceed that authority even when it is wrong, manipulated, or compromised.",
 };
 
 /**
- * Persistent chrome: the sandbox banner, the seven routes, and the demo clock.
+ * The root layout carries fonts and nothing else.
  *
- * The kill switch joins this header in M3. It is reachable from every page for
- * the same reason the banner is undismissable — the safety affordances are not
- * something a user should have to go looking for.
+ * There are two shells in this product and they do not nest: the marketing
+ * entry page at `/` scrolls as an ordinary document, and the console under
+ * `/console` is a fixed application frame in which only `<main>` scrolls.
+ * Putting chrome here would force one to inherit the other's constraints.
  */
 export default function RootLayout({
   children,
@@ -24,25 +48,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen antialiased">
-        <SandboxBanner />
-        <HaltedBanner />
-
-        <header className="border-b border-neutral-800/80">
-          <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-3">
-            <div className="flex items-center gap-6">
-              <span className="text-sm font-semibold tracking-tight">
-                Edict
-</span>
-              <Nav />
-            </div>
-            <ClockDisplay />
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>
-      </body>
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }

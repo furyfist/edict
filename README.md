@@ -61,6 +61,9 @@ Run it:
 npm run dev
 ```
 
+`/` is the entry page. The product lives under `/console` — eight routes behind
+one sidebar, each answering a single question. `⌘1`–`⌘8` jump between them.
+
 ## Scripts
 
 | Command | Purpose |

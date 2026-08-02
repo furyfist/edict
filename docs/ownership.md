@@ -26,7 +26,10 @@ belongs to another workstream, ask its owner rather than adding it.
 | `lib/policy/compiler/` | **WS-C** | English to rules |
 | `lib/explain/` | **WS-C** | Deterministic explanation templates |
 | `lib/email/` | **WS-C** | Vendor draft generation |
-| `app/**` (pages, components) | **WS-D** | All seven routes, modals, chrome |
+| `app/console/**` | **WS-D** | All eight console routes |
+| `app/page.tsx` | **WS-D** | The entry page — the one surface outside the console shell |
+| `app/_components/**` | **WS-D** | `ui/` primitives, `layout/` atoms, `feedback/` states, `data/` tables, `domain/` vocabulary, `shell/` chrome, `marketing/` decoration |
+| `app/_lib/**` | **WS-D** | The class merger and the tone map — the two files a colour or type decision has to pass through |
 
 ---
 
@@ -68,7 +71,7 @@ create a file outside your directories.
 | `lib/adversary/` | **WS-C** | The frozen corpus, attack planning, the hostile proposer. Quarantined exactly like `lib/agent` — plans attacks, never delivers them |
 | `lib/gauntlet/` | **WS-A** | Aggregation and the signed adversarial record. Outside the adversary's wall on purpose: the attacker does not write its own scoreboard |
 | `app/api/gauntlet/` | **WS-A** | The runner that delivers attacks and the route that signs the record |
-| `app/gauntlet/` | **WS-D** | Scoreboard, corpus browser, adversarial ledger view |
+| `app/console/gauntlet/` | **WS-D** | Scoreboard, corpus browser, adversarial ledger view |
 
 **Schema change announced (V2/M1):** one new enum `ClaimType` and one new model
 `Claim`. This is a new table, not an additive column, and it is deliberate — the
