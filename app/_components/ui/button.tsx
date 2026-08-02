@@ -68,4 +68,24 @@ export function Button({ className, variant, size, ...props }: ButtonProps) {
   );
 }
 
+/**
+ * The same control as an anchor. Navigation and downloads are links — they are
+ * middle-clickable, they have a URL, and a `<button>` that navigates throws all
+ * of that away.
+ */
+export function ButtonLink({
+  className,
+  variant,
+  size,
+  ...props
+}: React.ComponentProps<"a"> & VariantProps<typeof buttonVariants>) {
+  return (
+    <a
+      data-slot="button"
+      className={cn(buttonVariants({ variant, size }), className)}
+      {...props}
+    />
+  );
+}
+
 export { buttonVariants };

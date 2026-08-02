@@ -2,7 +2,19 @@ import { db } from "@/lib/db/client";
 import { formatCents } from "@/lib/contracts/money";
 import type { Cents } from "@/lib/contracts";
 import { addDays, daysBetween, getClock, startOfDay } from "@/lib/clock";
-import { DbUnavailable, PageHeader } from "../_components/page-header";
+import { PageHeader } from "@/app/_components/layout/page-header";
+import { DbUnavailable } from "@/app/_components/feedback/alert";
+import { EmptyState } from "@/app/_components/feedback/empty-state";
+import { Badge } from "@/app/_components/ui/badge";
+import { Unknown } from "@/app/_components/layout/key-value-grid";
+import {
+  TableFrame,
+  TBody,
+  TD,
+  TH,
+  THead,
+  TR,
+} from "@/app/_components/data/table";
 
 export const dynamic = "force-dynamic";
 
@@ -147,87 +159,104 @@ export default async function VendorsPage() {
   }
 
   return (
-    <section>
+    <>
       <PageHeader
         title="Vendors"
-        question="The evidence behind every decision. Unknown usage is shown as unknown — it is not the same as nobody using it."
+        question="What is the evidence behind a decision? Unknown usage is shown as unknown — it is not the same as nobody using it."
       />
 
       {unavailable ? (
         <DbUnavailable />
-      ) : rows.length === 0 ? (
-        <p className="mt-6 text-sm text-neutral-500">
-          No vendors. Run <code className="text-neutral-300">npm run seed</code>.
-        </p>
       ) : (
-        <div className="mt-6 overflow-x-auto">
-          <table className="w-full min-w-[46rem] text-left text-sm">
-            <thead>
-              <tr className="border-b border-neutral-800 text-[10px] uppercase tracking-wide text-neutral-500">
-                <th className="py-2 font-medium">Vendor</th>
-                <th className="py-2 font-medium">Seats active</th>
-                <th className="py-2 font-medium">Renewal</th>
-                <th className="py-2 font-medium">Due</th>
-                <th className="py-2 font-medium">Authority</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-800/80">
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="py-2.5">
-                    <span className="text-neutral-100">{row.name}</span>
-                    <span className="ml-2 text-xs text-neutral-600">
+        <TableFrame
+          isEmpty={rows.length === 0}
+          empty={
+            <EmptyState
+              variant="no-data"
+              title="No vendors"
+              description="The demo dataset has not been loaded. Run npm run seed — it is deterministic and idempotent."
+            />
+          }
+        >
+          <THead>
+            <TH>Vendor</TH>
+            <TH>Seats active</TH>
+            <TH>Renewal</TH>
+            <TH>Due</TH>
+            <TH>Authority</TH>
+          </THead>
+          <TBody>
+            {rows.map((row) => (
+              <TR key={row.id}>
+                <TD>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-body-strong text-foreground">
+                      {row.name}
+                    </span>
+                    <span className="text-meta text-text-subtle">
                       {row.category}
                     </span>
                     {row.injectedMessages > 0 ? (
-                      <span className="ml-2 rounded border border-amber-500/30 px-1 py-0.5 text-[10px] text-amber-300">
+                      <Badge tone="medium">
                         {row.injectedMessages} injected
-                      </span>
+                      </Badge>
                     ) : null}
-                  </td>
-                  <td className="py-2.5 text-neutral-300">
-                    {row.seatsActive === null ? (
-                      <span className="text-amber-300/80">unknown</span>
-                    ) : (
-                      `${row.seatsActive}/${row.seatsAssigned}`
-                    )}
-                  </td>
-                  <td className="py-2.5 text-neutral-300">
-                    {row.amountCents === null
-                      ? "—"
-                      : formatCents(row.amountCents as Cents)}
-                  </td>
-                  <td className="py-2.5 text-neutral-400">
-                    {row.dueInDays === null ? (
-                      "—"
-                    ) : row.dueInDays < 0 ? (
-                      // A due date behind the demo clock is a real state, not a
-                      // rendering slip: the cycle was adjudicated and the clock
-                      // has since moved on. "-27d" in a column headed Due reads
-                      // as a bug at a glance, so say what it means and keep the
-                      // magnitude.
-                      <span className="text-amber-300/80">
-                        past due {Math.abs(row.dueInDays)}d
-                      </span>
-                    ) : (
-                      `${row.dueInDays}d`
-                    )}
-                  </td>
-                  <td className="py-2.5">
-                    {row.hasMandate ? (
-                      <span className="text-xs text-emerald-300">mandated</span>
-                    ) : (
-                      <span className="text-xs text-amber-300">
-                        outside authority
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </div>
+                </TD>
+
+                {/* Absent data stays absent. Zero seats active and no usage
+                    data at all are different situations, the engine treats
+                    them differently, and so must this column. */}
+                <TD className="tabular-nums">
+                  {row.seatsActive === null ? (
+                    <span
+                      className="text-warn"
+                      title="No usage records exist for this vendor. That is not the same as nobody using it."
+                    >
+                      unknown
+                    </span>
+                  ) : (
+                    `${row.seatsActive}/${row.seatsAssigned}`
+                  )}
+                </TD>
+
+                <TD className="tabular-nums">
+                  {row.amountCents === null ? (
+                    <Unknown title="No renewal cycle has started for this vendor." />
+                  ) : (
+                    formatCents(row.amountCents as Cents)
+                  )}
+                </TD>
+
+                <TD className="tabular-nums">
+                  {row.dueInDays === null ? (
+                    <Unknown title="No renewal cycle has started for this vendor." />
+                  ) : row.dueInDays < 0 ? (
+                    // A due date behind the demo clock is a real state, not a
+                    // rendering slip: the cycle was adjudicated and the clock
+                    // has since moved on. "-27d" in a column headed Due reads
+                    // as a bug at a glance, so say what it means and keep the
+                    // magnitude.
+                    <span className="text-warn">
+                      past due {Math.abs(row.dueInDays)}d
+                    </span>
+                  ) : (
+                    `${row.dueInDays}d`
+                  )}
+                </TD>
+
+                <TD>
+                  {row.hasMandate ? (
+                    <Badge tone="success">mandated</Badge>
+                  ) : (
+                    <Badge tone="medium">outside authority</Badge>
+                  )}
+                </TD>
+              </TR>
+            ))}
+          </TBody>
+        </TableFrame>
       )}
-    </section>
+    </>
   );
 }
