@@ -13,7 +13,7 @@ Everything needed to drive the demo, and to recover when something goes wrong.
 | Database reachable | `npm run db:push` |
 | Connection pool | `DATABASE_URL` ends `connection_limit=20`. Worth ~0.2s since the Vendors page reads were grouped; keep it, but it is not load-bearing |
 | Clean state | `npm run seed` |
-| Tests green | `npm run test` — expect 299 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
+| Tests green | `npm run test` — expect 304 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
 | **History replays** | `npm run replay` — expect `IDENTICAL`. If it diverges, the engine no longer reproduces a decision it already made, and beat 1's Q&A answer is gone. **~4s** |
 | **Books balance** | `/authority` → **Reconcile now** → expect **books balance**. If it comes back *cannot be verified*, see the row below. If it comes back *discrepant* before you have attacked anything, **stop and investigate** — that is a real finding |
 | **Gauntlet is pre-run** | `npm run demo:rebuild` — reseed, tick, full corpus, reconcile, sign, in the one order that produces a record able to make the strong claim. **14–22 minutes; run it overnight.** Then `/gauntlet` shows a scoreboard, **attested**, not *never run*. **Nothing else may write to the database while it runs** |
