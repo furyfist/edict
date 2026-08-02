@@ -14,6 +14,7 @@
     "keygen": "tsx scripts/keygen.ts",
     "verify": "node scripts/verify-receipts.mjs",
     "replay": "tsx scripts/replay-history.ts",
+    "demo:rebuild": "tsx scripts/rebuild-demo-state.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",

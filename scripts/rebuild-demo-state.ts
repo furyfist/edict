@@ -1,4 +1,18 @@
-/** Clean demo state: reseed, operational tick, full gauntlet, reconcile, record. */
+/**
+ * ONE COMMAND TO A DEMO-READY DATABASE.
+ *
+ *   npm run demo:rebuild
+ *
+ * Reseed, one operational tick, the full corpus, a reconciliation, and the
+ * signed adversarial record — in that order, because the record cites the
+ * completeness proof and a reconciliation run BEFORE the attacks would be
+ * anchored to a ledger head the attacks then moved past.
+ *
+ * Takes 10-20 minutes: it is twelve ticks back to back. Run it overnight, or at
+ * minimum an hour before the room. Nothing else may write to the database while
+ * it runs — not the test suite, not a second process — or the chain forks. See
+ * the chain-break rows in docs/runbook.md.
+ */
 import { db } from "../lib/db/client";
 import { resetDatabase, seedDatabase } from "../lib/db/seed";
 import { runTick } from "../app/api/tick/runner";

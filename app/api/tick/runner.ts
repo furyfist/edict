@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db/client";
 import { addDays, ensureSystemState, wallNow } from "@/lib/clock";
 import { buildEvidenceBundle } from "@/lib/evidence";
-import { activeAgent } from "@/lib/agent";
+import { activeAgent, validateProposal } from "@/lib/agent";
 import { routeOutcome } from "@/lib/outcome";
 import { appendEntry, hasEntryForCycle } from "@/lib/ledger";
 import { paymentBoundary } from "@/lib/prava";
@@ -249,10 +249,52 @@ export async function runTick(options: TickOptions = {}): Promise<TickReport> {
       });
       if (!evidence) continue;
 
-      const proposed = await agent.propose({
+      const raw = await agent.propose({
         evidence,
         policyText: policy.englishText,
       });
+
+      /**
+       * THE PROPOSAL GATE — applied to whatever any agent hands back.
+       *
+       * -----------------------------------------------------------------------
+       * FOUND BY `npm run replay`, AFTER THE GAUNTLET WENT GREEN.
+       *
+       * The LLM agent validates its own output, and the stub cannot produce
+       * anything invalid, so for a while nothing checked the boundary itself.
+       * Then the gauntlet introduced a proposer the ATTACKER controls, which
+       * returns `ok: true` with whatever it likes — including an action outside
+       * the closed set.
+       *
+       * The engine refused those correctly. But `proposedAction` is a database
+       * enum, so the invalid action had to be coerced on the way to storage, and
+       * the entry then recorded an action nobody proposed. Replaying it produced
+       * a different verdict, because it WAS a different proposal. The record had
+       * quietly stopped being a faithful account of what happened.
+       *
+       * So the gate moves here, where it should always have been: a proposal
+       * that fails its contract never reaches the engine or the ledger as a
+       * decision. It becomes a MALFORMED refusal with no authorizing rule —
+       * which is the truth, and which `npm run replay` correctly skips, because
+       * the engine never ran.
+       *
+       * Validating an agent's output is not a slur on the agent. It is the
+       * boundary doing its job, and it holds whether the proposer is a frontier
+       * model, a stub, or an adversary.
+       * -----------------------------------------------------------------------
+       */
+      const proposed: typeof raw = raw.ok
+        ? (() => {
+            const checked = validateProposal(raw.proposal, evidence);
+            return checked.ok
+              ? { ok: true as const, proposal: checked.proposal }
+              : {
+                  ok: false as const,
+                  reason: "MALFORMED" as const,
+                  message: checked.message,
+                };
+          })()
+        : raw;
 
       if (!proposed.ok) {
         if (proposed.reason === "UNAVAILABLE") {
