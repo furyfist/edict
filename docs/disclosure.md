@@ -23,7 +23,13 @@ out loud during the demo, not buried in a repository nobody opens.
   `lib/ledger`, `lib/policy/engine`, `lib/outcome`, or `lib/db`. Checked
   transitively by `lib/architecture.test.ts` — a build failure, not a
   convention. `grep` can only prove there is no direct edge; the graph proves
-  there is no path.
+  there is no path. **`lib/adversary` lives behind the same wall**, plus
+  `lib/reconcile`: the attacker cannot reach the code that judges whether its
+  own attacks worked.
+- **The gauntlet runs the real pipeline.** Every attack goes through the same
+  `runTick` the cron calls — same lock, same mandate refresh, same policy
+  pinning, same idempotency check, same outcome router, same chain. Exactly two
+  substitutions: who proposes, and how the tick is labelled.
 - **The append-only ledger.** No update path, no delete path, anywhere.
 - **Two-sided reconciliation.** Every executed entry is matched against the
   payment provider's own charge history, and every charge in that history is
@@ -54,6 +60,55 @@ out loud during the demo, not buried in a repository nobody opens.
   model."* Say this out loud during the beat rather than letting someone find
   it.
 - **The company itself.** There is no customer behind this data.
+
+## What the gauntlet proves, and what it does not
+
+**It proves** that twelve named attacks — one or more aimed at every defence in
+the architecture — ran through the ordinary tick path, unattended, and that the
+signed ledger they produced contains no charge the corpus did not sanction. The
+corpus is frozen, versioned, and hashed; the record cites both. Every verdict is
+computed from fields on signed entries, so anyone holding the export can
+re-derive the scoreboard without trusting us.
+
+**The attacker owns the model completely.** The gauntlet does not test whether
+our proposer can be talked into a bad suggestion — the runbook already admits
+the real model usually refuses the bait. It assumes the attacker simply *has*
+the proposer and every token it emits. That is a deliberately harsher threat
+model, and it is the only version of the claim that survives the next model
+release.
+
+**It does not prove the corpus is complete.** Twelve attacks are twelve attacks.
+There is no claim here that they exhaust the space of attacks, and the number is
+reported as a number rather than as a proof of safety. A growing corpus is the
+honest next step, not a solved problem.
+
+**Two attacks in the corpus need our own credentials** — writing a charge
+straight through the adapter, and rewriting a row in the database. Those are not
+"the system was broken into", they are "the people running the system turned on
+it", and their defence is detection after the fact rather than prevention. They
+are marked `OPERATOR` and are **excluded from the unattended run and from the
+headline number**, because mixing them in would overstate what the gauntlet
+shows. They are demonstrated live on the Attack console with the privilege
+announced.
+
+**Attacks that could not be staged are reported, not counted.** If no mandate is
+paused, the dead-mandate attack has nothing to attack; if the environment runs
+out of unadjudicated billing cycles, later attacks never run. Both are reported
+by name with the reason and counted as neither pass nor fail.
+
+**The gauntlet advances the demo clock and bills vendors again.** Each attack
+needs its own unadjudicated billing cycle, so the runner moves the clock forward
+a month per attack and — where a monthly vendor is now due again — writes the
+next renewal row, carrying over the real amount, frequency and currency. That is
+the calendar moving, not evidence being invented: usage data and mandates are
+never touched, and the engine reads the same tables it always reads. After a full
+run the demo clock will be years ahead; **reseed before rehearsing.**
+
+**The headline is self-limiting.** "Zero moved money outside authority" is a
+claim about money, and the gauntlet can only see the ledger. The record cites the
+reconciliation attestation that closes that gap, and when the attestation is
+missing, stale, discrepant, or could not read the provider's book, the headline
+refuses the strong wording and names the gap instead. That behaviour is tested.
 
 ## The second book, stated precisely
 

@@ -13,15 +13,17 @@ Everything needed to drive the demo, and to recover when something goes wrong.
 | Database reachable | `npm run db:push` |
 | Connection pool | `DATABASE_URL` ends `connection_limit=20`. Worth ~0.2s since the Vendors page reads were grouped; keep it, but it is not load-bearing |
 | Clean state | `npm run seed` |
-| Tests green | `npm run test` — expect 238 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
+| Tests green | `npm run test` — expect 274 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
 | **History replays** | `npm run replay` — expect `IDENTICAL`. If it diverges, the engine no longer reproduces a decision it already made, and beat 1's Q&A answer is gone. **~4s** |
 | **Books balance** | `/authority` → **Reconcile now** → expect **books balance**. If it comes back *cannot be verified*, see the row below. If it comes back *discrepant* before you have attacked anything, **stop and investigate** — that is a real finding |
+| **Gauntlet is pre-run** | `/gauntlet` shows a scoreboard, **attested**, not *never run*. This is a 10–18 minute job. Run it, then reconcile, then check the record — **in that order**, see below |
+| **The record makes the strong claim** | On `/gauntlet`, the headline should read *"…zero moved money outside authority"*, not *"…NOT supported here"*. If it refuses the strong claim it is telling you the completeness proof underneath it is missing or stale: run reconciliation, then re-run the record |
 | **Which book you are reconciling against** | The Authority panel says *checked against Prava* or *the mock provider*. **With `PRAVA_SECRET_KEY` set against the sandbox, every mandate reads `unsupported` and the result is `cannot be verified`** — the sandbox exposes no charge-history endpoint (`docs/spikes/prava-charge-history.md`). Run beat 6 with the mock, and disclose it |
 | **Signing key is set** | `curl <url>/api/receipts/key` → `configured: true`. **If this is false every entry reads *unattested* and beat 7 evaporates.** Set `RECEIPT_SIGNING_KEY`, redeploy, re-run the tick |
 | Verifier runs on the presentation machine | `npm run verify <bundle>` against an exported file, with wifi off |
 | Build clean | `npm run build` |
 | **Present from the production build** | `npm run build && npm start` — **never `npm run dev`.** Dev compiles each route on first visit, on top of the query cost below |
-| **Warm every page** | After starting the server, load all seven pages once. Cheap insurance, and it is the moment you would notice a page failing |
+| **Warm every page** | After starting the server, load all eight pages once. Cheap insurance, and it is the moment you would notice a page failing |
 | Deployed build is current | Redeploy, then load the URL |
 | Prava sandbox live | Hit the Authority page; mandate statuses should read `active`. With `PRAVA_SECRET_KEY` unset the mock adapter runs: charges still decline over-cap, but the **live passkey ceremony and the Prava-dashboard cross-check are both unavailable** — know which version of beats 4 and 5b you are giving before you walk in |
 | Which agent is live | Ledger entry → `decided by`. Says `deterministic fallback` when no `OPENAI_API_KEY` |
@@ -57,6 +59,8 @@ nothing; one that overruns the number you rehearsed to costs you the room.
 | **History replay** (`npm run replay`, 8 entries) | **4.1–4.6s** | Q&A. Includes process start and connection |
 | **Omission bypass** (charge under cap, no record) | **~5.1s** | Live. Narrate the one sentence while it runs |
 | **Reconciliation** (8 mandates, both directions) | **4.6–5.7s** | Live. The whole of beat 6 is ~10s of machine time inside a 45s beat |
+| **Gauntlet — one attack** | **~40–90s** | Each attack is a full tick. Live, exactly one, narrated |
+| **Gauntlet — full corpus (12 external attacks)** | **10–18 minutes** | **PRE-RUN THIS. Overnight, or at minimum an hour before the room.** It is twelve ticks back to back |
 | Engine bypass (either mode) | ~3s | Fine live. This is the climax and it is fast |
 | Receipt export | ~2s | Fine live |
 | Offline verification (8 entries) | **<1s** | Fine live. Local crypto, no round trips |
@@ -239,6 +243,54 @@ was written and that we wrote it. It does not prove the record was true when
 written — the cross-check for that is the Prava dashboard, which beat 3 already
 does. Volunteer the limit.
 
+**5b. The gauntlet.** `/gauntlet`. The scoreboard is already populated from the
+overnight run — **do not run the corpus live, it is twelve ticks and up to
+eighteen minutes.**
+
+Open on the four numbers at the top, and point at the third one:
+
+> *"Last night, twelve attacks ran against this system unattended. Every defence
+> in the architecture has attackers aimed at it — prompt injection, a proposer
+> the attacker owns outright, actions outside the closed set, a currency switch,
+> a vendor the policy forbids. That column is how many got through."*
+
+Then scroll to the class table. Every row reads `n/n defended`, and the breached
+column is zeros.
+
+**Read the headline out loud.** It is the sentence the whole project builds to,
+and it is signed:
+
+> *"Twelve attacks ran and zero moved money outside authority. The ledger was
+> proven complete against the payment network's own book at the same head this
+> record is anchored to, so 'zero recorded' and 'zero' are the same number."*
+
+**That second sentence is the one to slow down on.** It is why M2 exists. A
+gauntlet counts money by reading its own ledger; an attacker who moves money
+*without writing a ledger entry* defeats that count entirely. The record knows
+this about itself — if reconciliation is missing, stale, discrepant, or could
+not read the provider's book, the headline **refuses the strong claim and names
+the gap**. Nobody has to remember to soften it.
+
+Then run **exactly one** attack live (**~40–90s**, narrate through it). Say the
+fork before you click, not after:
+
+> *"There are two ways this ends. Either the attacker gets past our agent and
+> the engine stops it anyway — that is the claim. Or the attacker fails to fool
+> the agent at all, which is nice but proves nothing. The record will tell you
+> which one you just watched."*
+
+**The strongest single sentence available here**, if you only get one:
+
+> *"We did not test whether our model can be fooled. We assumed the attacker
+> simply HAS the model — that every token it emits is chosen by them — and asked
+> what the system does then. That is the only version of this claim that
+> survives the next model release."*
+
+**One narrative trap, and it is the big one.** Do not explain corpus freezing,
+run contexts, claim envelopes, or how targets are selected. Show the scoreboard
+and the file. A judge who asks *"how do you know the attacks are reproducible?"*
+has already decided the project is serious — answer that in Q&A.
+
 **6b. "So steal from yourself."** `/attack`, section 5. This is the sharpest
 beat in V2 and it takes about ten seconds of machine time.
 
@@ -362,6 +414,44 @@ Then the run reports **cannot be verified**, names the mandates it could not
 read, and signs that. It does not report balanced books. That distinction is the
 single most important line in `lib/reconcile/run.ts` — treating an unreadable
 book as an empty one would turn an outage into a proof of completeness.
+
+**"How do you know the attacks are reproducible?"**
+The corpus is frozen data, versioned and hashed. Every record cites the corpus
+version *and* its digest, so a record claiming `corpus-1` cannot be matched
+against a quietly edited `corpus-1` — change one character of one payload and
+every prior record stops matching. Attacks name their targets by selector rather
+than by id, so the corpus survives a reseed.
+
+**"Isn't the gauntlet just your own code marking its own homework?"**
+The attacker cannot reach the marker. `lib/adversary` has no import path to
+`lib/prava`, `lib/ledger`, `lib/policy/engine`, `lib/outcome`, `lib/db`, or
+`lib/reconcile` — the same wall `lib/agent` lives behind, checked transitively
+by the same test. It plans attacks and hands back descriptions; something
+outside the wall delivers them. And the pass/fail judgement is computed from
+fields on the *signed ledger entry* each attack produced, not from anything the
+attacker said, which is why a stranger holding the exported bundle can re-derive
+every verdict themselves.
+
+**"Why does the run go through the normal tick?"**
+Because a gauntlet that exercised its own code path would produce a scoreboard
+describing a system nobody ships. Every attack goes through `runTick` — same
+lock, same mandate refresh, same policy pinning, same idempotency check, same
+outcome router, same ledger writer, same chain. Exactly two things are
+substituted: who proposes, and how the tick is labelled.
+
+**"Some attacks say 'not run'. Aren't those just failures you're hiding?"**
+The opposite — they are failures we refuse to count as passes. An attack that
+could not be staged in this environment (no paused mandate to attack, no
+unadjudicated billing cycle left) proves nothing, and folding it into the
+defended column would inflate the only number this milestone produces. They are
+reported by name with the reason.
+
+**"Isn't the adversarial ledger separate, so you can hide things in it?"**
+One chain. Same writer, same schema, same signatures, same verifier. The run
+context is a tag on the tick, and views filter by joining to it — the chain
+never filters, because a chain you can filter is a chain an attacker can hide an
+edit inside. Verify the export: operational and adversarial entries are links in
+the same hash chain.
 
 **"Couldn't you just backfill the second book from your own ledger?"**
 We could, and it would make every reconciliation pass forever while proving

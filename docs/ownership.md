@@ -65,12 +65,26 @@ create a file outside your directories.
 | `scripts/replay-history.ts` | **WS-A** | History replay CLI |
 | `lib/reconcile/` | **WS-B** | Two-sided reconciliation. Core is pure; `run.ts` does the reads through `lib/prava`'s index |
 | `app/api/reconcile/` | **WS-B** | Run a reconciliation, read the latest attestation |
+| `lib/adversary/` | **WS-C** | The frozen corpus, attack planning, the hostile proposer. Quarantined exactly like `lib/agent` — plans attacks, never delivers them |
+| `lib/gauntlet/` | **WS-A** | Aggregation and the signed adversarial record. Outside the adversary's wall on purpose: the attacker does not write its own scoreboard |
+| `app/api/gauntlet/` | **WS-A** | The runner that delivers attacks and the route that signs the record |
+| `app/gauntlet/` | **WS-D** | Scoreboard, corpus browser, adversarial ledger view |
 
 **Schema change announced (V2/M1):** one new enum `ClaimType` and one new model
 `Claim`. This is a new table, not an additive column, and it is deliberate — the
 three V2 claim types (activation, reconciliation, adversarial) are one object,
 so adding a type must never mean adding a table, a signer, or a verifier. No
 existing model was altered.
+
+**Schema change announced (V2/M3):** one new enum `RunContext`, and two additive
+columns on `Tick` (`runContext`, `attackId`).
+
+**Deliberately NOT on `LedgerEntry`.** An entry's contract projection is what
+gets signed; adding a field there would change every signed payload and
+invalidate every receipt ever issued — the ledger would read CHAIN COMPROMISED
+on stage for a schema change nobody attacked. Verified: all existing receipts
+still validate after this change. Context is a property of the run, not of the
+decision, and it travels beside the record rather than inside it.
 
 **Schema change announced (V2/M2):** one new model `MockCharge` — the mock
 payment provider's own book, written only by the mock adapter. It exists so
