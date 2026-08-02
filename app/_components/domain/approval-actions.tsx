@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ExternalLink } from "lucide-react";
+import { Button, ButtonLink } from "@/app/_components/ui/button";
+import { Alert } from "@/app/_components/feedback/alert";
 
 /**
  * Approve / reject controls.
@@ -11,6 +14,9 @@ import { useRouter } from "next/navigation";
  * passkey ceremony on Prava's surface. The copy says so, because a control that
  * implies more power than it has is the exact confusion this product exists to
  * remove.
+ *
+ * Loading is a present-participle label, never a spinner. "Approving…" on a
+ * 32px control avoids the layout shift a spinner causes and reads better.
  */
 export function ApprovalActions({
   id,
@@ -20,7 +26,7 @@ export function ApprovalActions({
   type: "POLICY_EXCEPTION" | "CEILING_RAISE";
 }) {
   const router = useRouter();
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"APPROVE" | "REJECT" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [passkeyUrl, setPasskeyUrl] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState<{
@@ -29,7 +35,7 @@ export function ApprovalActions({
   } | null>(null);
 
   async function decide(decision: "APPROVE" | "REJECT") {
-    setBusy(true);
+    setBusy(decision);
     setError(null);
     try {
       const response = await fetch("/api/approvals", {
@@ -76,66 +82,68 @@ export function ApprovalActions({
 
       router.refresh();
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   if (unavailable) {
-    // Deliberately not styled as an error. Nothing failed: the system was
-    // asked for authority it cannot create and declined to invent it.
+    // Deliberately not styled as an error. Nothing failed: the system was asked
+    // for authority it cannot create and declined to invent it.
     return (
-      <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
-        <p className="text-xs text-amber-200">{unavailable.message}</p>
-        <p className="mt-1 text-xs text-neutral-400">{unavailable.detail}</p>
-        <p className="mt-2 text-[11px] uppercase tracking-wide text-neutral-500">
+      <Alert tone="warn" title={unavailable.message}>
+        <p>{unavailable.detail}</p>
+        <p className="text-label text-text-subtle mt-2">
           ceiling unchanged · no new authority granted
         </p>
-      </div>
+      </Alert>
     );
   }
 
   if (passkeyUrl) {
     return (
-      <div className="rounded border border-sky-500/30 bg-sky-500/5 p-3">
-        <p className="text-xs text-sky-200">
-          Recorded. The ceiling has not moved.
-        </p>
-        <p className="mt-1 text-xs text-neutral-400">
-          Complete the passkey ceremony to grant the new authority.
-        </p>
-        <a
+      <Alert tone="info" title="Recorded. The ceiling has not moved.">
+        <p>Complete the passkey ceremony to grant the new authority.</p>
+        <ButtonLink
+          variant="outline"
+          size="sm"
           href={passkeyUrl}
           target="_blank"
           rel="noreferrer"
-          className="mt-2 inline-block rounded border border-sky-500/40 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-500/10"
+          className="mt-3"
         >
-          Open passkey ceremony ↗
-        </a>
-      </div>
+          Open passkey ceremony
+          <ExternalLink aria-hidden />
+        </ButtonLink>
+      </Alert>
     );
   }
 
   return (
-    <div>
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={busy}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          disabled={busy !== null}
           onClick={() => decide("APPROVE")}
-          className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 disabled:opacity-40"
         >
-          {type === "CEILING_RAISE" ? "Approve — needs passkey" : "Approve"}
-        </button>
-        <button
-          type="button"
-          disabled={busy}
+          {busy === "APPROVE"
+            ? "Approving…"
+            : type === "CEILING_RAISE"
+              ? "Approve — needs a passkey"
+              : "Approve"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy !== null}
           onClick={() => decide("REJECT")}
-          className="rounded border border-neutral-600 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
         >
-          Reject
-        </button>
+          {busy === "REJECT" ? "Rejecting…" : "Reject"}
+        </Button>
       </div>
-      {error ? <p className="mt-2 text-xs text-rose-300">{error}</p> : null}
+      {error ? (
+        <Alert tone="danger" title="The decision was not recorded." detail={error} />
+      ) : null}
     </div>
   );
 }

@@ -2,9 +2,17 @@ import { listVersions } from "@/lib/policy/versions";
 import { activationFor } from "@/lib/policy/activation";
 import { formatCents } from "@/lib/contracts/money";
 import type { Cents } from "@/lib/contracts";
-import { DbUnavailable, PageHeader } from "../_components/page-header";
-import { PolicyComposer } from "../_components/policy-composer";
-import { VersionDiff } from "../_components/version-diff";
+import { PageHeader } from "@/app/_components/layout/page-header";
+import { PageSections, Section } from "@/app/_components/layout/section";
+import { KeyValueGrid } from "@/app/_components/layout/key-value-grid";
+import { DbUnavailable } from "@/app/_components/feedback/alert";
+import { EmptyState } from "@/app/_components/feedback/empty-state";
+import { Card } from "@/app/_components/ui/card";
+import { Badge } from "@/app/_components/ui/badge";
+import { EffectChip } from "@/app/_components/domain/chips";
+import { MonoId } from "@/app/_components/domain/mono";
+import { PolicyComposer } from "@/app/_components/domain/policy-composer";
+import { VersionDiff } from "@/app/_components/domain/version-diff";
 
 export const dynamic = "force-dynamic";
 
@@ -20,12 +28,6 @@ type Rule = {
   frequency: string | null;
   renewalWithinDays: number | null;
   sourceFragment: string;
-};
-
-const EFFECT_STYLE: Record<string, string> = {
-  DENY: "border-rose-500/30 bg-rose-500/10 text-rose-300",
-  REQUIRE_APPROVAL: "border-sky-500/30 bg-sky-500/10 text-sky-300",
-  ALLOW_AUTO: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
 };
 
 function conditionSummary(rule: Rule): string {
@@ -56,6 +58,10 @@ function scopeSummary(rule: Rule): string {
  * rule quoting the exact span it came from. Every enforcement in this product
  * traces back to words a human actually wrote, and this page is where that
  * claim is verifiable rather than merely asserted.
+ *
+ * The two columns ARE the argument, which is why they are a two-column grid at
+ * `md` and a stack below it. A rule and the sentence it came from have to be
+ * readable together at any width.
  */
 export default async function PolicyPage() {
   let versions: Array<{
@@ -81,176 +87,181 @@ export default async function PolicyPage() {
   // activated before records existed — rendered as absent, never as unproven.
   const activation = active && !unavailable ? await activationFor(active.id) : null;
   const activationSubject = activation?.subject as
-    | { previewDigest?: string | null; scenarioCount?: number | null; counts?: Record<string, number> | null }
+    | {
+        previewDigest?: string | null;
+        scenarioCount?: number | null;
+        counts?: Record<string, number> | null;
+      }
     | null
     | undefined;
 
   return (
-    <section>
+    <>
       <PageHeader
         title="Policy"
-        question="Your words on the left, the rules they compiled into on the right. Nothing enforces anything it cannot quote."
+        question="Where does the agent's authority come from? Your words on one side, the rules they compiled into on the other — nothing enforces anything it cannot quote."
       />
 
       {unavailable ? (
         <DbUnavailable />
       ) : (
-        <>
-          <div className="mt-6 rounded border border-neutral-800 p-4">
-            <PolicyComposer initialText={active?.englishText ?? ""} />
-          </div>
+        <PageSections>
+          <Section
+            title="Compose"
+            description="English becomes rules, the rules are rehearsed against your real book, and only then can they be granted. Compiling grants nothing."
+          >
+            <Card>
+              <PolicyComposer initialText={active?.englishText ?? ""} />
+            </Card>
+          </Section>
 
           {!active ? (
-            <p className="mt-6 text-sm text-neutral-500">
-              No active policy. The agent halts until one is activated.
-            </p>
+            <EmptyState
+              variant="no-data"
+              title="No active policy"
+              description="The agent halts until one is activated. Write a sentence above, read what it would do, and grant it."
+            />
           ) : (
-        <>
-          <div className="mt-6 grid gap-6 md:grid-cols-2">
-            <div>
-              <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                What you wrote — version {active.version}
-              </h2>
-              <blockquote className="mt-3 border-l-2 border-neutral-700 pl-3 text-sm leading-relaxed text-neutral-200">
-                {active.englishText}
-              </blockquote>
+            <>
+              <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
+                <Section title={`What you wrote — version ${active.version}`}>
+                  <blockquote className="border-accent text-body text-foreground border-l-2 pl-4 leading-7">
+                    {active.englishText}
+                  </blockquote>
 
-              {/*
-                The activation record. Three states, never two: attested, written
-                but unsigned, and absent. An activation with no record is not a
-                suspicious activation — it is one that predates records, and
-                saying so is cheaper than implying otherwise.
-              */}
-              {activation ? (
-                <div className="mt-4 rounded border border-neutral-800 p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                        activation.receiptSignature
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                          : "border-neutral-700 text-neutral-400"
-                      }`}
-                    >
-                      {activation.receiptSignature ? "attested" : "unattested"}
-                    </span>
-                    <span className="text-xs text-neutral-400">
-                      activation record
-                    </span>
-                  </div>
-
-                  <p className="mt-2 text-xs leading-relaxed text-neutral-400">
-                    {activationSubject?.previewDigest
-                      ? `Granted after a preview of ${activationSubject.scenarioCount} scenarios was shown. The preview hash and the ledger head at that moment are inside the signature.`
-                      : "Granted without a preview. Nothing proves what was shown before this authority was created."}
-                  </p>
-
-                  <dl className="mt-2 space-y-1">
-                    {activationSubject?.previewDigest ? (
-                      <div className="flex gap-2">
-                        <dt className="text-[10px] uppercase tracking-wide text-neutral-600">
-                          preview
-                        </dt>
-                        <dd className="truncate font-mono text-[10px] text-neutral-500">
-                          {activationSubject.previewDigest}
-                        </dd>
+                  {/*
+                    The activation record. Three states, never two: attested,
+                    written but unsigned, and absent. An activation with no
+                    record is not a suspicious activation — it is one that
+                    predates records, and saying so is cheaper than implying
+                    otherwise.
+                  */}
+                  {activation ? (
+                    <Card className="mt-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          tone={activation.receiptSignature ? "success" : "neutral"}
+                        >
+                          {activation.receiptSignature ? "attested" : "unattested"}
+                        </Badge>
+                        <span className="text-meta text-text-muted">
+                          activation record
+                        </span>
                       </div>
-                    ) : null}
-                    <div className="flex gap-2">
-                      <dt className="text-[10px] uppercase tracking-wide text-neutral-600">
-                        anchor
-                      </dt>
-                      <dd className="truncate font-mono text-[10px] text-neutral-500">
-                        {activation.ledgerHead}
-                      </dd>
-                    </div>
-                  </dl>
-                </div>
-              ) : (
-                <p className="mt-4 text-xs text-neutral-600">
-                  No activation record — this version was activated before records
-                  existed.
-                </p>
-              )}
-            </div>
 
-            <div>
-              <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                What it enforces
-              </h2>
-              <ol className="mt-3 space-y-3">
-                {active.rules.map((rule) => (
-                  <li
-                    key={rule.id}
-                    className="rounded border border-neutral-800 p-3"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-[10px] text-neutral-600">
-                        {rule.ordinal}
-                      </span>
-                      <span
-                        className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                          EFFECT_STYLE[rule.effect] ??
-                          "border-neutral-700 text-neutral-400"
-                        }`}
-                      >
-                        {rule.effect.toLowerCase().replace(/_/g, " ")}
-                      </span>
-                      <span className="text-xs text-neutral-500">
-                        {scopeSummary(rule)}
-                      </span>
-                    </div>
+                      <p className="text-meta text-text-muted mt-2">
+                        {activationSubject?.previewDigest
+                          ? `Granted after a preview of ${activationSubject.scenarioCount} scenarios was shown. The preview hash and the ledger head at that moment are inside the signature.`
+                          : "Granted without a preview. Nothing proves what was shown before this authority was created."}
+                      </p>
 
-                    <p className="mt-2 text-xs text-neutral-400">
-                      {conditionSummary(rule)}
-                    </p>
-
-                    <p className="mt-2 text-xs italic text-neutral-300">
-                      &ldquo;{rule.sourceFragment}&rdquo;
-                    </p>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          </div>
-
-          {others.length > 0 ? (
-            <div className="mt-10">
-              <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                Version history
-              </h2>
-              <ul className="mt-3 divide-y divide-neutral-800/80 border-y border-neutral-800/80">
-                {others.map((version) => (
-                  <li key={version.id} className="py-2.5">
-                    <div className="flex items-baseline justify-between gap-4">
-                      <span className="truncate text-sm text-neutral-400">
-                        v{version.version} · {version.englishText.slice(0, 70)}
-                        {version.englishText.length > 70 ? "…" : ""}
-                      </span>
-                      <span className="shrink-0 text-[10px] uppercase tracking-wide text-neutral-600">
-                        {version.status.toLowerCase()}
-                      </span>
-                    </div>
-                    {/*
-                      The diff runs against the ACTIVE version, because the
-                      question a person has about an old version is always the
-                      same one: what is different now?
-                    */}
-                    <div className="mt-1">
-                      <VersionDiff
-                        fromId={version.id}
-                        toId={active.id}
-                        label={`what changed between v${version.version} and v${active.version}?`}
+                      <KeyValueGrid
+                        className="mt-3"
+                        items={[
+                          ...(activationSubject?.previewDigest
+                            ? [
+                                {
+                                  label: "preview",
+                                  value: (
+                                    <MonoId
+                                      value={activationSubject.previewDigest}
+                                      label="preview digest"
+                                      truncate={24}
+                                    />
+                                  ),
+                                },
+                              ]
+                            : []),
+                          {
+                            label: "anchor",
+                            value: (
+                              <MonoId
+                                value={activation.ledgerHead}
+                                label="ledger head"
+                                truncate={24}
+                              />
+                            ),
+                          },
+                        ]}
                       />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </>
+                    </Card>
+                  ) : (
+                    <p className="text-meta text-text-subtle mt-4">
+                      No activation record — this version was activated before
+                      records existed.
+                    </p>
+                  )}
+                </Section>
+
+                <Section
+                  title="What it enforces"
+                  description="Each rule quotes the exact span of your sentence it came from."
+                >
+                  <ol className="flex flex-col gap-3">
+                    {active.rules.map((rule) => (
+                      <li
+                        key={rule.id}
+                        className="border-border bg-card rounded-lg border p-4"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-mono text-text-subtle">
+                            {rule.ordinal}
+                          </span>
+                          <EffectChip effect={rule.effect} />
+                          <span className="text-meta text-text-muted">
+                            {scopeSummary(rule)}
+                          </span>
+                        </div>
+
+                        <p className="text-meta text-text-muted mt-2">
+                          {conditionSummary(rule)}
+                        </p>
+
+                        <p className="text-body text-foreground mt-2 italic">
+                          &ldquo;{rule.sourceFragment}&rdquo;
+                        </p>
+                      </li>
+                    ))}
+                  </ol>
+                </Section>
+              </div>
+
+              {others.length > 0 ? (
+                <Section
+                  title="Version history"
+                  description="The question a person has about an old version is always the same one: what is different now?"
+                >
+                  <ul className="flex flex-col gap-3">
+                    {others.map((version) => (
+                      <li
+                        key={version.id}
+                        className="border-border bg-card rounded-lg border p-4"
+                      >
+                        <div className="flex flex-wrap items-baseline justify-between gap-3">
+                          <span className="text-body text-text-muted min-w-0 truncate">
+                            v{version.version} ·{" "}
+                            {version.englishText.slice(0, 90)}
+                            {version.englishText.length > 90 ? "…" : ""}
+                          </span>
+                          <Badge tone="neutral">
+                            {version.status.toLowerCase()}
+                          </Badge>
+                        </div>
+
+                        <VersionDiff
+                          fromId={version.id}
+                          toId={active.id}
+                          label={`What changed between v${version.version} and v${active.version}?`}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              ) : null}
+            </>
           )}
-        </>
+        </PageSections>
       )}
-    </section>
+    </>
   );
 }

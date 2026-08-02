@@ -1,17 +1,23 @@
 import { CORPUS, CORPUS_VERSION, externalEntries } from "@/lib/adversary";
 import { latestRecord } from "@/lib/gauntlet";
 import { listAdversarialEntries } from "@/lib/ledger";
-import { DbUnavailable, PageHeader } from "../_components/page-header";
-import { GauntletBoard } from "../_components/gauntlet-board";
+import { PageHeader } from "@/app/_components/layout/page-header";
+import { PageSections, Section } from "@/app/_components/layout/section";
+import { DbUnavailable } from "@/app/_components/feedback/alert";
+import { Badge } from "@/app/_components/ui/badge";
+import { Card } from "@/app/_components/ui/card";
+import { GauntletBoard } from "@/app/_components/domain/gauntlet-board";
+import { MonoId } from "@/app/_components/domain/mono";
+import { humanise } from "@/app/_lib/tone";
 
 export const dynamic = "force-dynamic";
 
 /**
- * The Gauntlet — the Attack Console, promoted.
+ * The Gauntlet — the Attack console, promoted.
  *
- * The manual injection console still exists at /attack and nothing was deleted
- * from it. This is the surface for the standing measurement: a frozen corpus,
- * run unattended, producing a signed record.
+ * The manual injection console still exists at /console/attack and nothing was
+ * deleted from it. This is the surface for the standing measurement: a frozen
+ * corpus, run unattended, producing a signed record.
  *
  * The difference between the two pages is the difference between an anecdote
  * and a number.
@@ -31,102 +37,95 @@ export default async function GauntletPage() {
   }
 
   return (
-    <section>
+    <>
       <PageHeader
         title="Gauntlet"
-        question="Every defence in this architecture has attackers aimed at it. This is what happened when they ran."
+        question="What happened when the attackers ran? Every defence in this architecture has attackers aimed at it."
       />
 
       {unavailable ? (
         <DbUnavailable />
       ) : (
-        <>
-          <div className="mt-6">
-            <GauntletBoard
-              corpusVersion={CORPUS_VERSION}
-              corpusSize={externalEntries().length}
-              initial={
-                record
-                  ? {
-                      ranAt: record.ranAt.toISOString(),
-                      attested: record.attested,
-                      stale: record.stale,
-                      subject: record.subject as never,
-                    }
-                  : null
-              }
-            />
-          </div>
+        <PageSections>
+          <GauntletBoard
+            corpusVersion={CORPUS_VERSION}
+            corpusSize={externalEntries().length}
+            initial={
+              record
+                ? {
+                    ranAt: record.ranAt.toISOString(),
+                    attested: record.attested,
+                    stale: record.stale,
+                    subject: record.subject as never,
+                  }
+                : null
+            }
+          />
 
-          <div className="mt-8">
-            <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-              The corpus — {CORPUS.length} attacks, {CORPUS_VERSION}
-            </h2>
-            <p className="mt-1 text-xs text-neutral-500">
-              Every attacker names the defence it is aimed at. Operator-privilege
-              attacks presuppose our own credentials and are demonstrated live on
-              the Attack console rather than counted in the unattended run.
-            </p>
-
-            <ul className="mt-3 divide-y divide-neutral-800/80 border-y border-neutral-800/80">
+          <Section
+            title={`The corpus — ${CORPUS.length} attacks, ${CORPUS_VERSION}`}
+            description="Every attacker names the defence it is aimed at. Operator-privilege attacks presuppose our own credentials and are demonstrated live on the Attack console rather than counted in the unattended run."
+          >
+            <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               {CORPUS.map((entry) => (
-                <li key={entry.id} className="py-2.5">
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <span className="rounded border border-neutral-700 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400">
-                      {entry.class.toLowerCase().replace(/_/g, " ")}
-                    </span>
-                    <span className="text-sm text-neutral-200">{entry.title}</span>
-                    {entry.privilege === "OPERATOR" ? (
-                      <span className="rounded border border-amber-500/30 bg-amber-500/5 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
-                        needs our credentials
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="mt-1 text-xs text-neutral-400">{entry.intent}</p>
-                  <p className="mt-0.5 text-[11px] text-neutral-600">
-                    aimed at: {entry.targets}
-                  </p>
+                <li key={entry.id}>
+                  <Card className="h-full">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone="neutral">{humanise(entry.class)}</Badge>
+                      {entry.privilege === "OPERATOR" ? (
+                        <Badge tone="medium">needs our credentials</Badge>
+                      ) : null}
+                    </div>
+                    <p className="text-card-title text-foreground mt-2">
+                      {entry.title}
+                    </p>
+                    <p className="text-meta text-text-muted mt-1.5">
+                      {entry.intent}
+                    </p>
+                    <p className="text-meta text-text-subtle mt-1">
+                      aimed at: {entry.targets}
+                    </p>
+                  </Card>
                 </li>
               ))}
             </ul>
-          </div>
+          </Section>
 
           {adversarialEntries.length > 0 ? (
-            <div className="mt-8">
-              <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-                Adversarial ledger — {adversarialEntries.length} entries
-              </h2>
-              <p className="mt-1 text-xs text-neutral-500">
-                Same chain as everything else, same signatures, same verifier.
-                Tagged, not separated: one chain means an attacker cannot hide an
-                edit between the two views.
-              </p>
-
-              <ul className="mt-3 divide-y divide-neutral-800/80 border-y border-neutral-800/80">
-                {adversarialEntries.slice(-30).reverse().map(({ entry, attackId }) => (
-                  <li
-                    key={entry.id}
-                    className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2"
-                  >
-                    <span className="text-xs text-neutral-300">
-                      {entry.vendorName}
-                    </span>
-                    <span className="text-[11px] uppercase tracking-wide text-neutral-500">
-                      {entry.outcome.toLowerCase()}
-                      {entry.refusalCode
-                        ? ` · ${entry.refusalCode.toLowerCase().replace(/_/g, " ")}`
-                        : ""}
-                    </span>
-                    <span className="font-mono text-[11px] text-neutral-600">
-                      {attackId ?? "—"}
-                    </span>
-                  </li>
-                ))}
+            <Section
+              title={`Adversarial ledger — ${adversarialEntries.length} entries`}
+              description="Same chain as everything else, same signatures, same verifier. Tagged, not separated: one chain means an attacker cannot hide an edit between the two views."
+            >
+              <ul className="flex flex-col">
+                {adversarialEntries
+                  .slice(-30)
+                  .reverse()
+                  .map(({ entry, attackId }) => (
+                    <li
+                      key={entry.id}
+                      className="border-border flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b py-2.5 last:border-b-0"
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="text-body text-foreground truncate">
+                          {entry.vendorName}
+                        </span>
+                        <span className="text-meta text-text-muted">
+                          {humanise(entry.outcome)}
+                          {entry.refusalCode
+                            ? ` · ${humanise(entry.refusalCode)}`
+                            : ""}
+                        </span>
+                      </span>
+                      <span className="shrink-0">
+                        <MonoId value={attackId} label="attack id" />
+                      </span>
+                    </li>
+                  ))}
               </ul>
-            </div>
+            </Section>
           ) : null}
-        </>
+        </PageSections>
       )}
-    </section>
+    </>
   );
 }

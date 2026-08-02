@@ -1,7 +1,12 @@
 import { db } from "@/lib/db/client";
 import { getClock } from "@/lib/clock";
-import { DbUnavailable, PageHeader } from "../_components/page-header";
-import { AttackConsole } from "../_components/attack-console";
+import { PageHeader } from "@/app/_components/layout/page-header";
+import { PageSections, Section } from "@/app/_components/layout/section";
+import { DbUnavailable } from "@/app/_components/feedback/alert";
+import { EmptyState } from "@/app/_components/feedback/empty-state";
+import { Card } from "@/app/_components/ui/card";
+import { Badge } from "@/app/_components/ui/badge";
+import { AttackConsole } from "@/app/_components/domain/attack-console";
 
 export const dynamic = "force-dynamic";
 
@@ -70,13 +75,13 @@ export default async function AttackPage() {
   }
 
   return (
-    <section>
+    <>
       <PageHeader
         title="Attack"
-        question="Plant a message in a vendor inbox, advance the clock, run a tick. The agent can be fooled; its ceiling cannot be argued with."
-        right={
-          unavailable ? null : (
-            <p className="text-xs text-neutral-500">{injected} planted</p>
+        question="Can the agent be fooled? Plant a message, advance the clock, run a tick — the agent can be fooled; its ceiling cannot be argued with."
+        actions={
+          unavailable || injected === 0 ? null : (
+            <Badge tone="medium">{injected} planted</Badge>
           )
         }
       />
@@ -84,30 +89,37 @@ export default async function AttackPage() {
       {unavailable ? (
         <DbUnavailable />
       ) : vendors.length === 0 ? (
-        <p className="mt-6 text-sm text-neutral-500">
-          No vendors. Run <code className="text-neutral-300">npm run seed</code>.
-        </p>
+        <EmptyState
+          variant="no-data"
+          title="No vendors"
+          description="There is nothing to attack until the demo dataset is loaded. Run npm run seed."
+        />
       ) : (
-        <>
-          <AttackConsole vendors={vendors} clock={clock} attested={attested} />
+        <PageSections>
+          <Section
+            title="The script"
+            description="Six beats, top to bottom. The last three deliberately breach our own defences and are marked as such."
+          >
+            <AttackConsole vendors={vendors} clock={clock} attested={attested} />
+          </Section>
 
-          <div className="mt-8 rounded border border-neutral-800 bg-neutral-900/40 p-4">
-            <h2 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-              What to say while this runs
-            </h2>
-            <p className="mt-2 text-sm leading-relaxed text-neutral-300">
-              The amount ceiling is enforced in the tokenized credential. Merchant,
-              frequency and duration are enforced by Prava. Our policy engine is the
-              first gate. Three independent layers — and none of them is the
-              language model.
-            </p>
-            <p className="mt-2 text-xs text-neutral-500">
-              Do not say the card network enforces the whole policy. It enforces the
-              amount, which is exactly the constraint under attack here.
-            </p>
-          </div>
-        </>
+          <Section title="What to say while this runs">
+            <Card>
+              <p className="text-body text-foreground">
+                The amount ceiling is enforced in the tokenized credential.
+                Merchant, frequency and duration are enforced by Prava. Our
+                policy engine is the first gate. Three independent layers — and
+                none of them is the language model.
+              </p>
+              <p className="text-meta text-text-muted mt-3">
+                Do not say the card network enforces the whole policy. It
+                enforces the amount, which is exactly the constraint under attack
+                here.
+              </p>
+            </Card>
+          </Section>
+        </PageSections>
       )}
-    </section>
+    </>
   );
 }
