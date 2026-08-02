@@ -49,6 +49,7 @@ export const HALT_REASONS = [
   "NO_POLICY",
   "AGENT_UNAVAILABLE",
   "ADAPTER_UNAVAILABLE",
+  "ENVIRONMENT_MISCONFIGURED",
   "LOCK_HELD",
 ] as const;
 export type HaltReason = (typeof HALT_REASONS)[number];

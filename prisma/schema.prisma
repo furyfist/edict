@@ -308,6 +308,8 @@ enum HaltReason {
   NO_POLICY
   AGENT_UNAVAILABLE
   ADAPTER_UNAVAILABLE
+  /// The key and the API host disagree about which rails are live. Never guess.
+  ENVIRONMENT_MISCONFIGURED
   LOCK_HELD
 }
 

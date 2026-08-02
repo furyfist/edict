@@ -10,6 +10,7 @@ import { refreshAllMandates } from "@/lib/prava/mandates";
 import { expireStaleApprovals } from "@/lib/outcome/approvals";
 import { activePolicy } from "@/lib/policy/versions";
 import { cents } from "@/lib/contracts/money";
+import { railsState } from "@/lib/config/rails";
 import type { Agent } from "@/lib/agent";
 
 /**
@@ -156,6 +157,27 @@ export async function runTick(options: TickOptions = {}): Promise<TickReport> {
         data: { clockAt: clock, status: "HALTED", haltReason: "KILL_SWITCH", ...label },
       });
       return halted(clock, "KILL_SWITCH", outcomes);
+    }
+
+    // Rails first, before the adapter is even asked anything.
+    //
+    // A live key on the sandbox host — or a test key on production — would
+    // authenticate against the wrong environment and every charge would come
+    // back as an opaque error. On stage that is indistinguishable from "the
+    // network declined it", which is the one sentence this product cannot
+    // afford anyone to doubt. So it halts, loudly, with its own reason.
+    const rails = railsState();
+    if (rails.rails === "MISCONFIGURED") {
+      await db.tick.create({
+        data: {
+          clockAt: clock,
+          status: "HALTED",
+          haltReason: "ENVIRONMENT_MISCONFIGURED",
+          ...label,
+        },
+      });
+      console.error(`[tick] refusing to run: ${rails.detail}`);
+      return halted(clock, "ENVIRONMENT_MISCONFIGURED", outcomes);
     }
 
     // A failing adapter halts rather than guessing.
