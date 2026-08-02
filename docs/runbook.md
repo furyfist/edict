@@ -16,7 +16,7 @@ Everything needed to drive the demo, and to recover when something goes wrong.
 | Tests green | `npm run test` — expect 304 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
 | **History replays** | `npm run replay` — expect `IDENTICAL`. If it diverges, the engine no longer reproduces a decision it already made, and beat 1's Q&A answer is gone. **~4s** |
 | **Books balance** | `/authority` → **Reconcile now** → expect **books balance**. If it comes back *cannot be verified*, see the row below. If it comes back *discrepant* before you have attacked anything, **stop and investigate** — that is a real finding |
-| **Gauntlet is pre-run** | `npm run demo:rebuild` — reseed, tick, full corpus, reconcile, sign, in the one order that produces a record able to make the strong claim. **14–22 minutes; run it overnight.** Then `/gauntlet` shows a scoreboard, **attested**, not *never run*. **Nothing else may write to the database while it runs** |
+| **Gauntlet is pre-run** | `npm run demo:rebuild` — reseed, tick, full corpus, **model matrix**, reconcile, sign. **That order matters**: everything that writes to the ledger must run before the reconciliation, or the record refuses the strong claim. **20–30 minutes; run it overnight.** Then `/gauntlet` shows a scoreboard, **attested**, not *never run*. **Nothing else may write to the database while it runs** |
 | **The record makes the strong claim** | On `/gauntlet`, the headline should read *"…zero moved money outside authority"*, not *"…NOT supported here"*. If it refuses the strong claim it is telling you the completeness proof underneath it is missing or stale: run reconciliation, then re-run the record |
 | **Which book you are reconciling against** | The Authority panel says *checked against Prava* or *the mock provider*. **With `PRAVA_SECRET_KEY` set against the sandbox, every mandate reads `unsupported` and the result is `cannot be verified`** — the sandbox exposes no charge-history endpoint (`docs/spikes/prava-charge-history.md`). Run beat 6 with the mock, and disclose it |
 | **Signing key is set** | `curl <url>/api/receipts/key` → `configured: true`. **If this is false every entry reads *unattested* and beat 7 evaporates.** Set `RECEIPT_SIGNING_KEY`, redeploy, re-run the tick |
@@ -60,7 +60,8 @@ nothing; one that overruns the number you rehearsed to costs you the room.
 | **Omission bypass** (charge under cap, no record) | **~5.1s** | Live. Narrate the one sentence while it runs |
 | **Reconciliation** (8 mandates, both directions) | **4.6–5.7s** | Live. The whole of beat 6 is ~10s of machine time inside a 45s beat |
 | **Gauntlet — one attack** | **~40–90s** | Each attack is a full tick. Live, exactly one, narrated |
-| **Gauntlet — full corpus (16 external attacks)** | **14–22 minutes** | **PRE-RUN THIS. Overnight, or at minimum an hour before the room.** It is sixteen ticks back to back |
+| **Gauntlet — full corpus (16 external attacks)** | **14–22 minutes** | **PRE-RUN THIS. Overnight, or at minimum an hour before the room.** Twelve ticks back to back, plus the ones that cannot be staged |
+| **Model matrix** (injection attacks × proposers) | **~6 minutes** | Six more ticks. Part of `demo:rebuild`; never run it live |
 | Engine bypass (either mode) | ~3s | Fine live. This is the climax and it is fast |
 | Receipt export | ~2s | Fine live |
 | Offline verification (8 entries) | **<1s** | Fine live. Local crypto, no round trips |
