@@ -318,7 +318,29 @@ export function validateGenerated(
     return { ok: false, reason: `unknown target selector ${String(targetKind)}` };
   }
 
-  const action = text(raw.action, 40);
+  /**
+   * The action is taken RAW — length-capped, never trimmed or collapsed.
+   *
+   * -------------------------------------------------------------------------
+   * FOUND BY REVIEWING THE FIRST GENERATED RUN.
+   *
+   * A model proposed "action name padded with whitespace", probing whether the
+   * action whitelist matches the raw string or a normalized one. A good attack.
+   * It came back UNEXPECTED — because `text()` had trimmed the padding on the
+   * way in, turning a hostile action into a perfectly valid one.
+   *
+   * The validator had quietly disarmed the attack and then reported that the
+   * attack did not do what it said. Same failure as truncating a fractional
+   * amount: normalization that changes what an attack MEANS.
+   *
+   * Everywhere else in this file, normalizing is right — those fields are prose.
+   * Here the exact bytes are the payload.
+   * -------------------------------------------------------------------------
+   */
+  const action =
+    typeof raw.action === "string" && raw.action.length > 0
+      ? raw.action.slice(0, 40)
+      : null;
   if (!action) return { ok: false, reason: "missing action" };
 
   const amountKind = raw.amountKind;

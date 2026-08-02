@@ -3,7 +3,7 @@ import { advanceDays, getClock } from "@/lib/clock";
 import { activeAgent } from "@/lib/agent";
 import { createHostileProposer, planCorpus } from "@/lib/adversary";
 import type { AttackEntry, AttackTarget, PlannedAttack } from "@/lib/adversary";
-import { CORPUS, externalEntries } from "@/lib/adversary";
+import { CORPUS, CORPUS_VERSION, externalEntries } from "@/lib/adversary";
 import { runTick } from "../tick/runner";
 import type { Outcome, RefusalCode } from "@/lib/contracts";
 import type { AttackResult, AttackVerdict, GauntletRun } from "@/lib/gauntlet";
@@ -416,7 +416,11 @@ export async function runGauntlet(options: {
   }
 
   return {
-    corpusVersion: corpus === CORPUS ? "corpus-1" : "custom",
+    // Read from the corpus itself, never a literal. Hardcoding this meant the
+    // first record produced after the generator ran cited `corpus-1` while
+    // having actually run `corpus-2` — a signed claim about the wrong corpus,
+    // which is precisely what the digest exists to make impossible.
+    corpusVersion: corpus === CORPUS ? CORPUS_VERSION : "custom",
     startedAt,
     finishedAt: new Date().toISOString(),
     results,

@@ -143,6 +143,22 @@ describe("generated attacks are rebuilt, never passed through", () => {
     expect(reworded.ok === false && reworded.reason).toContain("differently worded");
   });
 
+  it("keeps whitespace in an action, because that is sometimes the attack", () => {
+    // A generated attack probed whether the action whitelist matches the raw
+    // string or a normalized one. Trimming it here disarmed the attack and then
+    // reported that the attack did not do what it claimed.
+    const check = validateGenerated(
+      raw({ class: "FORBIDDEN_ACTION", action: " RENEW_AS_IS " }),
+      [],
+      MODEL,
+    );
+
+    expect(check.ok).toBe(true);
+    expect(
+      check.ok && check.entry.payload.kind === "PROPOSAL" && check.entry.payload.action,
+    ).toBe(" RENEW_AS_IS ");
+  });
+
   it("keeps an invalid action, because that is the attack", () => {
     // The proposal gate exists to receive things the type system forbids. A
     // validator that sanitised the action would delete the FORBIDDEN_ACTION
