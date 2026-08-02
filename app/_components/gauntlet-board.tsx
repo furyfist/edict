@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { formatCents } from "@/lib/contracts/money";
+import type { Cents } from "@/lib/contracts";
 
 /**
  * THE SCOREBOARD.
@@ -27,6 +29,7 @@ interface ClassTally {
   attempted: number;
   defended: number;
   breached: number;
+  unexpected: number;
   skipped: number;
 }
 
@@ -36,7 +39,12 @@ interface AttackResult {
   title: string;
   targets: string;
   privilege: string;
-  verdict: "DEFENDED" | "BREACHED" | "NOT_APPLICABLE" | "NOT_ATTEMPTED";
+  verdict:
+    | "DEFENDED"
+    | "BREACHED"
+    | "UNEXPECTED"
+    | "NOT_APPLICABLE"
+    | "NOT_ATTEMPTED";
   vendorName: string | null;
   outcome: string | null;
   refusalCode: string | null;
@@ -54,12 +62,27 @@ interface Record_ {
     attempted: number;
     defended: number;
     breached: number;
+    unexpected: number;
     notApplicable: number;
     notAttempted: number;
     centsMovedOutsideAuthority: number;
     byClass: ClassTally[];
     results: AttackResult[];
     completeness: { status: string | null; unproven: boolean };
+    matrix: {
+      proposers: Array<{ name: string; available: boolean; reason: string | null }>;
+      rows: Array<{
+        proposer: string;
+        attackId: string;
+        vendorName: string;
+        proposedCents: number;
+        outcome: string;
+        chargedCents: number;
+        withinAuthority: boolean;
+      }>;
+      outsideAuthority: unknown[];
+      sentence: string;
+    } | null;
     headline: string;
   };
 }
@@ -67,6 +90,8 @@ interface Record_ {
 const VERDICT_STYLE: Record<string, string> = {
   DEFENDED: "text-emerald-300",
   BREACHED: "text-rose-300",
+  // Amber, not red. Authority held; a prediction missed.
+  UNEXPECTED: "text-amber-300",
   NOT_APPLICABLE: "text-neutral-500",
   NOT_ATTEMPTED: "text-neutral-500",
 };
@@ -213,6 +238,7 @@ export function GauntletBoard({
                     <th className="py-1 font-medium">run</th>
                     <th className="py-1 font-medium">defended</th>
                     <th className="py-1 font-medium">breached</th>
+                    <th className="py-1 font-medium">unexpected</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-800/80">
@@ -234,11 +260,89 @@ export function GauntletBoard({
                       >
                         {t.breached}
                       </td>
+                      <td
+                        className={`py-1.5 font-mono ${
+                          t.unexpected > 0 ? "text-amber-300" : "text-neutral-600"
+                        }`}
+                      >
+                        {t.unexpected}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
+            {/*
+              The model matrix. A table, deliberately — "three proposers,
+              identical bounds" is a good idea and a bad thirty seconds, so it
+              lives below the scoreboard and answers a Q&A question rather than
+              competing with the headline.
+            */}
+            {s.matrix && s.matrix.rows.length > 0 ? (
+              <div className="mt-6 rounded border border-neutral-800 p-3">
+                <h3 className="text-xs font-medium text-neutral-300">
+                  Same attacks, different proposers
+                </h3>
+                <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+                  {s.matrix.sentence}
+                </p>
+
+                <div className="mt-2 overflow-x-auto">
+                  <table className="w-full min-w-[30rem] text-left text-[11px]">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wide text-neutral-600">
+                        <th className="py-1 font-medium">proposer</th>
+                        <th className="py-1 font-medium">vendor</th>
+                        <th className="py-1 font-medium">proposed</th>
+                        <th className="py-1 font-medium">outcome</th>
+                        <th className="py-1 font-medium">charged</th>
+                        <th className="py-1 font-medium">within authority</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-800/80">
+                      {s.matrix.rows.map((r, i) => (
+                        <tr key={`${r.proposer}-${r.attackId}-${i}`}>
+                          <td className="py-1 font-mono text-neutral-300">
+                            {r.proposer}
+                          </td>
+                          <td className="py-1 text-neutral-400">{r.vendorName}</td>
+                          <td className="py-1 font-mono text-neutral-400">
+                            {formatCents(r.proposedCents as Cents)}
+                          </td>
+                          <td className="py-1 text-neutral-400">
+                            {r.outcome.toLowerCase()}
+                          </td>
+                          <td className="py-1 font-mono text-neutral-400">
+                            {formatCents(r.chargedCents as Cents)}
+                          </td>
+                          {/* The invariant column. The only one that must be
+                              uniform, and the only claim being made. */}
+                          <td
+                            className={`py-1 ${
+                              r.withinAuthority ? "text-emerald-300" : "text-rose-300"
+                            }`}
+                          >
+                            {r.withinAuthority ? "yes" : "NO"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {s.matrix.proposers.some((p) => !p.available) ? (
+                  <p className="mt-2 text-[11px] text-amber-200">
+                    Not run:{" "}
+                    {s.matrix.proposers
+                      .filter((p) => !p.available)
+                      .map((p) => `${p.name} (${p.reason})`)
+                      .join(", ")}
+                    . A missing variant is reported, not skipped silently.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
 
             <ul className="mt-4 space-y-1.5">
               {s.results.map((r) => (

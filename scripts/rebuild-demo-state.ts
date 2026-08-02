@@ -16,8 +16,8 @@
 import { db } from "../lib/db/client";
 import { resetDatabase, seedDatabase } from "../lib/db/seed";
 import { runTick } from "../app/api/tick/runner";
-import { runGauntlet } from "../app/api/gauntlet/runner";
-import { recordGauntlet } from "../lib/gauntlet";
+import { runGauntlet, runMatrix } from "../app/api/gauntlet/runner";
+import { recordGauntlet, summarizeMatrix } from "../lib/gauntlet";
 import { attestReconciliation } from "../lib/reconcile/attest";
 import { verifiedChain } from "../lib/ledger";
 
@@ -35,7 +35,10 @@ async function main() {
   const { run: rec } = await attestReconciliation();
   console.log(`reconciliation: ${rec.status}`);
 
-  const { subject } = await recordGauntlet(run);
+  const matrix = summarizeMatrix(await runMatrix());
+  console.log(`matrix: ${matrix.rows.length} rows across ${matrix.proposers.filter((p) => p.available).length} proposers`);
+
+  const { subject } = await recordGauntlet(run, matrix);
   console.log(`record: ${subject.defended}/${subject.attempted} defended, ${subject.breached} breached`);
 
   const chain = await verifiedChain();

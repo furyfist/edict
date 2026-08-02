@@ -7,6 +7,8 @@
  */
 
 export { summarize, tallyByClass, headlineFor } from "./aggregate";
+export { summarizeMatrix } from "./matrix";
+export type { ModelMatrix, MatrixRow, ProposerAvailability } from "./matrix";
 export type {
   AdversarialSummary,
   ClassTally,

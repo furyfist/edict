@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { CORPUS, CORPUS_VERSION, corpusDigest } from "@/lib/adversary";
-import { latestRecord, recordGauntlet } from "@/lib/gauntlet";
-import { runGauntlet } from "./runner";
+import { latestRecord, recordGauntlet, summarizeMatrix } from "@/lib/gauntlet";
+import { runGauntlet, runMatrix } from "./runner";
 
 export const dynamic = "force-dynamic";
 /** A full corpus run is minutes, not seconds. Pre-run it; do not await it live. */
@@ -27,7 +27,13 @@ export async function POST(request: Request) {
       : undefined;
 
   const run = await runGauntlet({ limit });
-  const { subject, claim } = await recordGauntlet(run);
+
+  // The matrix only runs on a FULL corpus run. A bounded live run is one attack
+  // narrated on stage; adding six more ticks to it would turn a 40-second beat
+  // into five minutes of silence.
+  const matrix = limit === undefined ? summarizeMatrix(await runMatrix()) : null;
+
+  const { subject, claim } = await recordGauntlet(run, matrix);
 
   return NextResponse.json({
     ok: true,

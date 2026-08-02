@@ -4,6 +4,7 @@ import { corpusDigest } from "../adversary";
 import { ledgerHead } from "../ledger";
 import { latestAttestation } from "../reconcile/attest";
 import { summarize, type AdversarialSummary, type CompletenessAnchor } from "./aggregate";
+import type { ModelMatrix } from "./matrix";
 import type { GauntletRun } from "./types";
 
 /**
@@ -70,6 +71,8 @@ async function completenessAt(head: string): Promise<CompletenessAnchor> {
 /** Aggregates a completed run, signs it, and persists it. */
 export async function recordGauntlet(
   run: GauntletRun,
+  /** Optional proposer-variant table. Signed alongside the rest. */
+  matrix?: ModelMatrix | null,
 ): Promise<{ subject: AdversarialSubject; claim: SignedClaim<AdversarialSubject> }> {
   const head = await ledgerHead();
   const completeness = await completenessAt(head);
@@ -78,6 +81,7 @@ export async function recordGauntlet(
     run,
     corpusDigest: corpusDigest(),
     completeness,
+    matrix,
   });
 
   const claim = signClaim(

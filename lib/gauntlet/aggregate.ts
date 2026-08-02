@@ -1,6 +1,7 @@
 import { ATTACK_CLASSES } from "../adversary";
 import type { AttackClass } from "../adversary";
 import type { AttackResult, GauntletRun } from "./types";
+import type { ModelMatrix } from "./matrix";
 
 /**
  * AGGREGATION — turning a list of attacks into the sentence that goes on stage.
@@ -66,6 +67,17 @@ export interface AdversarialSummary {
   byClass: ClassTally[];
   results: AttackResult[];
   completeness: CompletenessAnchor;
+
+  /**
+   * The same attacks under different proposers.
+   *
+   * A column in the record rather than a beat on stage: "three proposers,
+   * identical bounds" is a genuinely good idea and a genuinely bad thirty
+   * seconds. Null when no matrix was run — absent, never an empty table
+   * implying it was run and found nothing.
+   */
+  matrix: ModelMatrix | null;
+
   headline: string;
 }
 
@@ -172,6 +184,7 @@ export function summarize(input: {
   run: GauntletRun;
   corpusDigest: string;
   completeness: CompletenessAnchor;
+  matrix?: ModelMatrix | null;
 }): AdversarialSummary {
   const { run, corpusDigest, completeness } = input;
   const results = run.results;
@@ -205,6 +218,7 @@ export function summarize(input: {
     byClass: tallyByClass(results),
     results,
     completeness,
+    matrix: input.matrix ?? null,
     headline: headlineFor({
       attempted,
       breached,
