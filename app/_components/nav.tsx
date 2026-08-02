@@ -18,6 +18,7 @@ const ROUTES = [
   { href: "/vendors", label: "Vendors" },
   { href: "/approvals", label: "Approvals" },
   { href: "/attack", label: "Attack" },
+  { href: "/gauntlet", label: "Gauntlet" },
 ] as const;
 
 export function Nav() {
