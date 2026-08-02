@@ -369,7 +369,8 @@ amount, which is exactly the constraint under attack.
 | A charge succeeded that should not have | Stop the demo. Say so plainly. This is a real finding and pretending otherwise is worse than the bug |
 | Every entry reads `unattested` | `RECEIPT_SIGNING_KEY` is not set on that build. Nothing is broken and nothing was lost — receipts were simply never issued. Set it, redeploy, re-run the tick. **Check this before the room, not in it** |
 | Tamper will not restore | The original amount comes from the entry's frozen `financialImpact`. If that is gone, reseed and re-run the tick (**~200s total**). Sequence beat 6 late so this never costs you a demo |
-| Verifier reports a chain break you did not cause | An entry was written by something outside the tick — usually a stray bypass call. Reseed and re-run the tick for a clean chain |
+| Verifier reports a chain break you did not cause | An entry was written by something outside the tick. **The most likely cause is `npm run test` running against the same database as a tick or a gauntlet.** `lib/ledger/receipt-roundtrip.test.ts` appends real entries and deletes them in cleanup; if a tick links to one of those in the window before it is deleted, that link points at nothing and the verifier correctly calls it a break. A stray bypass call does the same. **Never run the suite against the demo database while anything else is writing to it.** Reseed and re-run for a clean chain |
+| **Two writers at once** | `appendEntry` reads the chain head, then writes. Ticks hold a single-flight lock so they cannot race each other, but nothing serializes a tick against the test suite, the bypass endpoint, or a second process. This is a documented, accepted limit at demo scale (`lib/ledger/write.ts`) and a chain-head table is the fix if it ever needs one. Operationally: one writer at a time |
 
 ---
 

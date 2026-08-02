@@ -1,0 +1,32 @@
+/** Clean demo state: reseed, operational tick, full gauntlet, reconcile, record. */
+import { db } from "../lib/db/client";
+import { resetDatabase, seedDatabase } from "../lib/db/seed";
+import { runTick } from "../app/api/tick/runner";
+import { runGauntlet } from "../app/api/gauntlet/runner";
+import { recordGauntlet } from "../lib/gauntlet";
+import { attestReconciliation } from "../lib/reconcile/attest";
+import { verifiedChain } from "../lib/ledger";
+
+async function main() {
+  await resetDatabase();
+  await seedDatabase();
+  console.log("reseeded");
+
+  const tick = await runTick();
+  console.log(`operational tick: ${tick.processed} processed ${JSON.stringify(tick.outcomes)}`);
+
+  const run = await runGauntlet();
+  console.log(`gauntlet: ${run.results.filter((r) => r.verdict === "DEFENDED" || r.verdict === "BREACHED").length} attacks run`);
+
+  const { run: rec } = await attestReconciliation();
+  console.log(`reconciliation: ${rec.status}`);
+
+  const { subject } = await recordGauntlet(run);
+  console.log(`record: ${subject.defended}/${subject.attempted} defended, ${subject.breached} breached`);
+
+  const chain = await verifiedChain();
+  const bad = chain.filter((c) => c.status !== "VALID").length;
+  console.log(`chain: ${chain.length} entries, ${bad} not valid`);
+  console.log(subject.headline);
+}
+main().finally(() => db.$disconnect());
