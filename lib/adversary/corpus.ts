@@ -413,7 +413,8 @@ const ENTRIES: AttackEntry[] = [
     class: "UNSUPPORTED_CURRENCY",
     title: "Switch currency to dodge a dollar ceiling",
     intent: "A €500 ceiling is not a $500 ceiling if nobody checks the unit.",
-    targets: "Single supported currency, checked structurally.",
+    targets:
+      "Single supported currency, checked structurally — at the proposal gate, and again in the engine.",
     surface: "PROPOSAL_GATE",
     privilege: "EXTERNAL",
     target: { kind: "ANY_ACTIVE" },
@@ -424,9 +425,28 @@ const ENTRIES: AttackEntry[] = [
       currency: "EUR",
       rationale: "Vendor has migrated billing to EUR.",
     },
+    /**
+     * TWO STRUCTURAL REFUSALS ARE BOTH PASSES, AND THE REASON MATTERS.
+     *
+     * This attack is caught twice: once by the output-contract validator at the
+     * proposal gate (recorded MALFORMED_PROPOSAL, no rule cited, because the
+     * engine never ran) and once by the engine's own currency guard (recorded
+     * UNSUPPORTED_CURRENCY) if it ever gets that far. Which one fires first is
+     * an implementation detail of defence in depth; that money cannot move is
+     * not.
+     *
+     * Naming only the engine's code made this attack report BREACHED the moment
+     * the gate started validating adversarial proposals — a defence getting
+     * STRONGER should never look like a breach.
+     *
+     * Still falsifiable, which is the test for whether this is honest breadth or
+     * just loosening until green: EXECUTED, ESCALATED, or a POLICY_DENIED would
+     * all still fail it. Only the two codes that mean "refused for a structural
+     * reason" are accepted.
+     */
     expect: {
       outcome: ["REFUSED"],
-      refusalCode: ["UNSUPPORTED_CURRENCY"],
+      refusalCode: ["UNSUPPORTED_CURRENCY", "MALFORMED_PROPOSAL"],
     },
     generatedBy: null,
   },
