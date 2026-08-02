@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/app/_components/ui/button";
@@ -80,6 +80,21 @@ export function BooksBalance({ initial }: { initial: Attestation | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Held disabled through the page refetch, not just the POST — see the note in
+  // `kill-switch.tsx`. A reconciliation that appears finished while the rest of
+  // the page still shows the previous result is the one outcome this component
+  // exists to prevent.
+  const [isPending, startTransition] = useTransition();
+  const refreshing = useRef(false);
+  const working = busy || isPending;
+
+  useEffect(() => {
+    if (refreshing.current && !isPending) {
+      refreshing.current = false;
+      setBusy(false);
+    }
+  }, [isPending]);
+
   async function reconcile() {
     setBusy(true);
     setError(null);
@@ -88,14 +103,17 @@ export function BooksBalance({ initial }: { initial: Attestation | null }) {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setError(body.error ?? `Failed with status ${response.status}.`);
+        setBusy(false);
         return;
       }
 
       const fresh = await fetch("/api/reconcile");
       const freshBody = await fresh.json().catch(() => ({}));
       setAttestation(freshBody.attestation ?? null);
-      router.refresh();
-    } finally {
+      refreshing.current = true;
+      startTransition(() => router.refresh());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
   }
@@ -122,9 +140,12 @@ export function BooksBalance({ initial }: { initial: Attestation | null }) {
           ) : null}
         </div>
 
-        <Button variant="outline" size="sm" disabled={busy} onClick={reconcile}>
-          <RefreshCw aria-hidden className={busy ? "animate-spin" : undefined} />
-          {busy ? "Reconciling…" : "Reconcile now"}
+        <Button variant="outline" size="sm" disabled={working} onClick={reconcile}>
+          <RefreshCw
+            aria-hidden
+            className={working ? "animate-spin" : undefined}
+          />
+          {working ? "Reconciling…" : "Reconcile now"}
         </Button>
       </div>
 

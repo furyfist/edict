@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Download, Play, Send, Trash2 } from "lucide-react";
 import { Button, ButtonLink } from "@/app/_components/ui/button";
@@ -49,18 +49,36 @@ interface TickReport {
   error?: string;
 }
 
+/**
+ * What a step reported, and how it went.
+ *
+ * The tone is carried alongside the text rather than assumed. Every outcome
+ * used to render as blue "info" — including failures — so a request that had
+ * errored looked exactly like one that had succeeded. On a console whose whole
+ * purpose is demonstrating what does and does not get through, that is the one
+ * thing the feedback must never be ambiguous about.
+ */
+interface StepStatus {
+  step: number;
+  text: string;
+  tone: "success" | "danger" | "info";
+}
+
 /** One numbered beat of the script. `hostile` marks a step that attacks us. */
 function Step({
   n,
   title,
   description,
   hostile,
+  status,
   children,
 }: {
   n: number;
   title: string;
   description?: React.ReactNode;
   hostile?: boolean;
+  /** Rendered inside the step that produced it, never at the page foot. */
+  status?: StepStatus | null;
   children: React.ReactNode;
 }) {
   return (
@@ -94,6 +112,14 @@ function Step({
             </div>
           ) : null}
           <div className="mt-4">{children}</div>
+
+          {status && status.step === n ? (
+            <Alert
+              tone={status.tone}
+              title={status.text}
+              className="mt-4"
+            />
+          ) : null}
         </div>
       </div>
     </Card>
@@ -114,10 +140,33 @@ export function AttackConsole({
   const [entryId, setEntryId] = useState(attested[0]?.id ?? "");
   const [message, setMessage] = useState(PRESET);
   const [busy, setBusy] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<StepStatus | null>(null);
   const [report, setReport] = useState<TickReport | null>(null);
 
+  // Controls stay disabled until the refetched page lands — the demo clock in
+  // the top bar and the planted-message count in the header both come from the
+  // server, so re-enabling on the POST alone let an operator advance the script
+  // faster than the screen could follow it.
+  const [isPending, startTransition] = useTransition();
+  const refreshing = useRef(false);
+  const working = busy !== null || isPending;
+
+  useEffect(() => {
+    if (refreshing.current && !isPending) {
+      refreshing.current = false;
+      setBusy(null);
+    }
+  }, [isPending]);
+
+  /** Report an outcome against the step that produced it, and refetch. */
+  function settle(step: number, text: string | null, tone: StepStatus["tone"]) {
+    if (text) setStatus({ step, text, tone });
+    refreshing.current = true;
+    startTransition(() => router.refresh());
+  }
+
   async function call(
+    step: number,
     label: string,
     url: string,
     init: RequestInit,
@@ -128,15 +177,23 @@ export function AttackConsole({
       const response = await fetch(url, init);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setStatus(body.error ?? `Failed with status ${response.status}.`);
+        setStatus({
+          step,
+          text: body.error ?? `Failed with status ${response.status}.`,
+          tone: "danger",
+        });
+        setBusy(null);
         return null;
       }
       return body;
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-      return null;
-    } finally {
+      setStatus({
+        step,
+        text: error instanceof Error ? error.message : String(error),
+        tone: "danger",
+      });
       setBusy(null);
+      return null;
     }
   }
 
@@ -150,6 +207,7 @@ export function AttackConsole({
     <div className="flex flex-col gap-3">
       <Step
         n={1}
+        status={status}
         title="Plant a message"
         description={
           <>
@@ -196,15 +254,12 @@ export function AttackConsole({
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button
-            disabled={busy !== null || !vendorId}
+            disabled={working || !vendorId}
             onClick={async () => {
-              const body = await call("inject", "/api/demo/inject", {
+              const body = await call(1, "inject", "/api/demo/inject", {
                 ...json({ vendorId, message }),
               });
-              if (body) {
-                setStatus("Message planted.");
-                router.refresh();
-              }
+              if (body) settle(1, "Message planted.", "success");
             }}
           >
             <Send aria-hidden />
@@ -212,25 +267,23 @@ export function AttackConsole({
           </Button>
           <Button
             variant="ghost"
-            disabled={busy !== null}
+            disabled={working}
             onClick={async () => {
-              const body = await call("clear", "/api/demo/inject", {
+              const body = await call(1, "clear", "/api/demo/inject", {
                 method: "DELETE",
               });
-              if (body) {
-                setStatus("Injected messages cleared.");
-                router.refresh();
-              }
+              if (body) settle(1, "Injected messages cleared.", "success");
             }}
           >
             <Trash2 aria-hidden />
-            Clear injected
+            {busy === "clear" ? "Clearing…" : "Clear injected"}
           </Button>
         </div>
       </Step>
 
       <Step
         n={2}
+        status={status}
         title="Move time forward"
         description={
           <p>
@@ -247,15 +300,12 @@ export function AttackConsole({
             <Button
               key={days}
               variant="outline"
-              disabled={busy !== null}
+              disabled={working}
               onClick={async () => {
-                const body = await call("clock", "/api/demo/clock", {
+                const body = await call(2, "clock", "/api/demo/clock", {
                   ...json({ days }),
                 });
-                if (body) {
-                  setStatus(`Clock advanced ${days} day(s).`);
-                  router.refresh();
-                }
+                if (body) settle(2, `Clock advanced ${days} day(s).`, "success");
               }}
               className="tabular-nums"
             >
@@ -267,6 +317,7 @@ export function AttackConsole({
 
       <Step
         n={3}
+        status={status}
         title="Run a tick"
         description={
           <p>
@@ -277,15 +328,17 @@ export function AttackConsole({
         }
       >
         <Button
-          disabled={busy !== null}
+          disabled={working}
           onClick={async () => {
-            const body = (await call("tick", "/api/tick", {
+            const body = (await call(3, "tick", "/api/tick", {
               method: "POST",
             })) as TickReport | null;
             if (body) {
               setReport(body);
-              setStatus(null);
-              router.refresh();
+              // The report block below carries the detail; a halted tick is
+              // still a successful request, so it is reported amber-free and
+              // the halt shows in the report itself.
+              settle(3, null, "success");
             }
           }}
         >
@@ -309,6 +362,7 @@ export function AttackConsole({
       <Step
         n={4}
         hostile
+        status={status}
         title="Bypass our own policy engine"
         description={
           <p>
@@ -325,15 +379,14 @@ export function AttackConsole({
         <div className="flex flex-wrap gap-2">
           <Button
             variant="danger"
-            disabled={busy !== null || !vendorId}
+            disabled={working || !vendorId}
             onClick={async () => {
-              const body = (await call("bypass", "/api/demo/bypass", {
+              const body = (await call(4, "bypass", "/api/demo/bypass", {
                 ...json({ vendorId, mode: "over_cap" }),
               })) as { declined?: boolean; note?: string } | null;
-              if (body) {
-                setStatus(body.note ?? null);
-                router.refresh();
-              }
+              // A decline is the desired outcome here, so the note is reported
+              // neutrally — the sentence itself says what happened.
+              if (body) settle(4, body.note ?? null, "info");
             }}
           >
             {busy === "bypass" ? "Charging…" : "Charge over the ceiling"}
@@ -341,18 +394,15 @@ export function AttackConsole({
 
           <Button
             variant="outline"
-            disabled={busy !== null || !vendorId}
+            disabled={working || !vendorId}
             onClick={async () => {
-              const body = (await call("bypass", "/api/demo/bypass", {
+              const body = (await call(4, "paused", "/api/demo/bypass", {
                 ...json({ vendorId, mode: "paused" }),
               })) as { note?: string } | null;
-              if (body) {
-                setStatus(body.note ?? null);
-                router.refresh();
-              }
+              if (body) settle(4, body.note ?? null, "info");
             }}
           >
-            Fallback: pause then charge
+            {busy === "paused" ? "Charging…" : "Fallback: pause then charge"}
           </Button>
         </div>
 
@@ -365,6 +415,7 @@ export function AttackConsole({
       <Step
         n={5}
         hostile
+        status={status}
         title="Steal from ourselves, and leave no record"
         description={
           <>
@@ -387,18 +438,17 @@ export function AttackConsole({
       >
         <Button
           variant="danger"
-          disabled={busy !== null || !vendorId}
+          disabled={working || !vendorId}
           onClick={async () => {
-            const body = (await call("bypass", "/api/demo/bypass", {
+            const body = (await call(5, "omission", "/api/demo/bypass", {
               ...json({ vendorId, mode: "omission" }),
             })) as { note?: string } | null;
-            if (body) {
-              setStatus(body.note ?? null);
-              router.refresh();
-            }
+            if (body) settle(5, body.note ?? null, "info");
           }}
         >
-          {busy === "bypass" ? "Charging…" : "Charge under cap, suppress the record"}
+          {busy === "omission"
+            ? "Charging…"
+            : "Charge under cap, suppress the record"}
         </Button>
 
         <p className="text-meta text-text-muted mt-3">
@@ -413,6 +463,7 @@ export function AttackConsole({
       <Step
         n={6}
         hostile
+        status={status}
         title="Rewrite the ledger"
         description={
           <>
@@ -462,15 +513,12 @@ export function AttackConsole({
             <div className="mt-4 flex flex-wrap gap-2">
               <Button
                 variant="danger"
-                disabled={busy !== null || !entryId}
+                disabled={working || !entryId}
                 onClick={async () => {
-                  const body = (await call("tamper", "/api/demo/tamper", {
+                  const body = (await call(6, "tamper", "/api/demo/tamper", {
                     ...json({ entryId, mode: "tamper" }),
                   })) as { note?: string } | null;
-                  if (body) {
-                    setStatus(body.note ?? null);
-                    router.refresh();
-                  }
+                  if (body) settle(6, body.note ?? null, "info");
                 }}
               >
                 {busy === "tamper" ? "Rewriting…" : "Rewrite this entry"}
@@ -478,18 +526,15 @@ export function AttackConsole({
 
               <Button
                 variant="outline"
-                disabled={busy !== null || !entryId}
+                disabled={working || !entryId}
                 onClick={async () => {
-                  const body = (await call("tamper", "/api/demo/tamper", {
+                  const body = (await call(6, "restore", "/api/demo/tamper", {
                     ...json({ entryId, mode: "restore" }),
                   })) as { note?: string } | null;
-                  if (body) {
-                    setStatus(body.note ?? null);
-                    router.refresh();
-                  }
+                  if (body) settle(6, body.note ?? null, "success");
                 }}
               >
-                Restore
+                {busy === "restore" ? "Restoring…" : "Restore"}
               </Button>
 
               <ButtonLink variant="ghost" href="/api/receipts?download=1">
@@ -501,10 +546,6 @@ export function AttackConsole({
         )}
       </Step>
 
-      {/* The running commentary. Persistent rather than a toast: every one of
-          these sentences is the result of an action somebody is narrating to a
-          room, and it must not vanish mid-sentence. */}
-      {status ? <Alert tone="info" title={status} /> : null}
     </div>
   );
 }

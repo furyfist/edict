@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ExternalLink } from "lucide-react";
 import { Button, ButtonLink } from "@/app/_components/ui/button";
@@ -34,6 +34,25 @@ export function ApprovalActions({
     detail: string;
   } | null>(null);
 
+  // `busy` deliberately stays set through the page refetch, so the button keeps
+  // reading "Approving…" until the decision is actually reflected on screen.
+  // Clearing it when the POST resolved re-enabled the control ~2.5s early,
+  // inviting a second click on a decision that had already been taken.
+  const [isPending, startTransition] = useTransition();
+  const refreshing = useRef(false);
+
+  useEffect(() => {
+    if (refreshing.current && !isPending) {
+      refreshing.current = false;
+      setBusy(null);
+    }
+  }, [isPending]);
+
+  function refresh() {
+    refreshing.current = true;
+    startTransition(() => router.refresh());
+  }
+
   async function decide(decision: "APPROVE" | "REJECT") {
     setBusy(decision);
     setError(null);
@@ -47,6 +66,7 @@ export function ApprovalActions({
 
       if (!response.ok) {
         setError(body.error ?? `Failed with status ${response.status}.`);
+        setBusy(null);
         return;
       }
 
@@ -66,7 +86,7 @@ export function ApprovalActions({
             message: setupBody.message ?? "No passkey ceremony is available.",
             detail: setupBody.detail ?? "The ceiling is unchanged.",
           });
-          router.refresh();
+          refresh();
           return;
         }
 
@@ -74,14 +94,17 @@ export function ApprovalActions({
           setError(
             setupBody.error ?? "Could not open the mandate setup session.",
           );
+          setBusy(null);
           return;
         }
         setPasskeyUrl(setupBody.approvalUrl ?? null);
+        setBusy(null);
         return;
       }
 
-      router.refresh();
-    } finally {
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
       setBusy(null);
     }
   }
@@ -123,7 +146,7 @@ export function ApprovalActions({
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          disabled={busy !== null}
+          disabled={busy !== null || isPending}
           onClick={() => decide("APPROVE")}
         >
           {busy === "APPROVE"
@@ -135,7 +158,7 @@ export function ApprovalActions({
         <Button
           variant="outline"
           size="sm"
-          disabled={busy !== null}
+          disabled={busy !== null || isPending}
           onClick={() => decide("REJECT")}
         >
           {busy === "REJECT" ? "Rejecting…" : "Reject"}

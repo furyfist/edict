@@ -584,7 +584,7 @@ function SiteFooter() {
             Export the receipt chain
           </a>
           <a
-            href="https://github.com"
+            href="https://github.com/furyfist/edict"
             target="_blank"
             rel="noreferrer"
             className="text-meta text-text-muted hover:text-foreground inline-flex items-center gap-1.5 transition-colors"

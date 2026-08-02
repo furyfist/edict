@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatCents } from "@/lib/contracts/money";
 import type { Cents } from "@/lib/contracts";
@@ -195,7 +195,10 @@ function ConfirmDialog({
     <Dialog
       open
       size="lg"
-      onClose={onCancel}
+      // Escape and the scrim are inert mid-activation. Dismissing the dialog
+      // while the grant is in flight would leave the reader unsure whether it
+      // went through.
+      onClose={busy ? () => {} : onCancel}
       title="Before you grant this"
       description="Nothing has been granted yet. Below is what these rules would have done, replayed against every renewal currently on your books and against the boundary cases your history does not contain."
       footer={
@@ -318,6 +321,28 @@ export function PolicyComposer({ initialText }: { initialText: string }) {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // The dialog stays open, reading "Activating…", until the refetched page
+  // actually shows the new policy.
+  //
+  // Closing it the moment the POST resolved dropped the reader back onto a
+  // page still displaying the OLD active version for ~2.5s — the single worst
+  // place in this product to imply nothing happened, because the whole point
+  // of the confirm step is that granting authority is a deliberate act with a
+  // visible result.
+  // ---------------------------------------------------------------------
+  const [isPending, startTransition] = useTransition();
+  const refreshing = useRef(false);
+  const committing = activating || isPending;
+
+  useEffect(() => {
+    if (refreshing.current && !isPending) {
+      refreshing.current = false;
+      setActivating(false);
+      setCompiled(null);
+    }
+  }, [isPending]);
+
   async function activate() {
     if (!compiled) return;
     setActivating(true);
@@ -340,12 +365,14 @@ export function PolicyComposer({ initialText }: { initialText: string }) {
         setModalError(
           body.error ?? `Activation failed with status ${response.status}.`,
         );
+        setActivating(false);
         return;
       }
 
-      setCompiled(null);
-      router.refresh();
-    } finally {
+      refreshing.current = true;
+      startTransition(() => router.refresh());
+    } catch (err) {
+      setModalError(err instanceof Error ? err.message : String(err));
       setActivating(false);
     }
   }
@@ -393,7 +420,7 @@ export function PolicyComposer({ initialText }: { initialText: string }) {
       {compiled ? (
         <ConfirmDialog
           compiled={compiled}
-          busy={activating}
+          busy={committing}
           error={modalError}
           onCancel={() => setCompiled(null)}
           onConfirm={activate}

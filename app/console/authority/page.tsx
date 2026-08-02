@@ -4,6 +4,7 @@ import type { Cents } from "@/lib/contracts";
 import { getClock, daysBetween } from "@/lib/clock";
 import { PageHeader } from "@/app/_components/layout/page-header";
 import { PageSections, Section } from "@/app/_components/layout/section";
+import { StatGrid, StatTile } from "@/app/_components/layout/stat-tile";
 import { DbUnavailable } from "@/app/_components/feedback/alert";
 import { EmptyState } from "@/app/_components/feedback/empty-state";
 import { MandateStatusChip } from "@/app/_components/domain/chips";
@@ -75,6 +76,19 @@ export default async function AuthorityPage() {
     unavailable = true;
   }
 
+  // ---------------------------------------------------------------------
+  // The page's own question, answered in one line.
+  //
+  // The per-vendor bars below show the shape of the authority; they do not show
+  // its SIZE. Answering "how much rope is left?" used to require summing three
+  // cards by eye, on the one screen where the total is the whole point.
+  // ---------------------------------------------------------------------
+  const authorized = mandates.reduce((sum, m) => sum + m.capCents, 0);
+  const remaining = mandates.reduce((sum, m) => sum + m.remainingCents, 0);
+  const spent = authorized - remaining;
+  const activeCount = mandates.filter((m) => m.status === "ACTIVE").length;
+  const remainingPct = authorized > 0 ? (remaining / authorized) * 100 : 0;
+
   return (
     <>
       <PageHeader
@@ -86,6 +100,33 @@ export default async function AuthorityPage() {
         <DbUnavailable />
       ) : (
         <PageSections>
+          {mandates.length > 0 ? (
+            <StatGrid>
+              <StatTile
+                label="Authorized"
+                value={formatCents(authorized as Cents)}
+                caption={`across ${mandates.length} mandate${mandates.length === 1 ? "" : "s"}`}
+              />
+              <StatTile label="Spent" value={formatCents(spent as Cents)} />
+              <StatTile
+                label="Remaining"
+                value={formatCents(remaining as Cents)}
+                // Amber only when the leash is nearly out. A healthy ceiling is
+                // achromatic, so a low one is the only coloured thing here.
+                tone={remainingPct <= 20 ? "medium" : "neutral"}
+                caption={`${Math.round(remainingPct)}% of the ceiling`}
+              />
+              <StatTile
+                label="Active mandates"
+                value={`${activeCount}/${mandates.length}`}
+                tone={
+                  engaged || activeCount < mandates.length ? "warn" : "neutral"
+                }
+                caption={engaged ? "halted by the kill switch" : undefined}
+              />
+            </StatGrid>
+          ) : null}
+
           <Section
             title="Stop everything"
             description="One control, reachable from every page, that withdraws the agent's authority everywhere at once."

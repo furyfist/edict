@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { OctagonX, Play } from "lucide-react";
+import { OctagonX, RotateCcw } from "lucide-react";
 import { Button } from "@/app/_components/ui/button";
 import { Input } from "@/app/_components/ui/field";
 import { Alert } from "@/app/_components/feedback/alert";
@@ -27,6 +27,24 @@ export function KillSwitch({ engaged }: { engaged: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ---------------------------------------------------------------------
+  // The control stays disabled until the REFETCHED PAGE lands, not until the
+  // POST resolves. Those are ~2.5s apart against a remote database, and in
+  // that gap the button used to re-enable while the screen still showed the
+  // agent running. Halting is the one action in this product where "did that
+  // work?" must never be an open question.
+  // ---------------------------------------------------------------------
+  const [isPending, startTransition] = useTransition();
+  const refreshing = useRef(false);
+  const working = busy || isPending;
+
+  useEffect(() => {
+    if (refreshing.current && !isPending) {
+      refreshing.current = false;
+      setBusy(false);
+    }
+  }, [isPending]);
+
   async function send(engage: boolean) {
     setBusy(true);
     setError(null);
@@ -39,6 +57,7 @@ export function KillSwitch({ engaged }: { engaged: boolean }) {
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         setError(body.error ?? `Failed with status ${response.status}.`);
+        setBusy(false);
         return;
       }
       const body = await response.json();
@@ -52,8 +71,10 @@ export function KillSwitch({ engaged }: { engaged: boolean }) {
       }
       setConfirming(false);
       setTyped("");
-      router.refresh();
-    } finally {
+      refreshing.current = true;
+      startTransition(() => router.refresh());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
   }
@@ -67,12 +88,14 @@ export function KillSwitch({ engaged }: { engaged: boolean }) {
         <Button
           variant="outline"
           size="sm"
-          disabled={busy}
+          disabled={working}
           onClick={() => send(false)}
           className="w-fit"
         >
-          <Play aria-hidden />
-          {busy ? "Restoring…" : "Restore authority"}
+          {/* Restoring is not "play". `RotateCcw` means resume-what-was-stopped
+              here and nowhere else; `Play` is reserved for running a tick. */}
+          <RotateCcw aria-hidden />
+          {working ? "Restoring…" : "Restore authority"}
         </Button>
         {error ? <Alert tone="danger" title="Something failed." detail={error} /> : null}
       </div>
@@ -104,7 +127,7 @@ export function KillSwitch({ engaged }: { engaged: boolean }) {
             <Button
               variant="danger"
               size="sm"
-              disabled={typed !== "HALT" || busy}
+              disabled={typed !== "HALT" || working}
               title={
                 typed !== "HALT"
                   ? "Type HALT exactly to enable this control."
@@ -112,11 +135,12 @@ export function KillSwitch({ engaged }: { engaged: boolean }) {
               }
               onClick={() => send(true)}
             >
-              {busy ? "Halting…" : "Halt the agent"}
+              {working ? "Halting…" : "Halt the agent"}
             </Button>
             <Button
               variant="ghost"
               size="sm"
+              disabled={working}
               onClick={() => {
                 setConfirming(false);
                 setTyped("");

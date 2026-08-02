@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Play, Swords } from "lucide-react";
 import { formatCents } from "@/lib/contracts/money";
@@ -122,6 +122,20 @@ export function GauntletBoard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Running the corpus is the slowest action in the product and the one an
+  // audience is watching most closely. The controls stay disabled and keep
+  // their participle label until the refetched page lands.
+  const [isPending, startTransition] = useTransition();
+  const refreshing = useRef(false);
+  const working = busy || isPending;
+
+  useEffect(() => {
+    if (refreshing.current && !isPending) {
+      refreshing.current = false;
+      setBusy(false);
+    }
+  }, [isPending]);
+
   async function run(limit?: number) {
     setBusy(true);
     setError(null);
@@ -134,14 +148,17 @@ export function GauntletBoard({
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setError(body.error ?? `Failed with status ${response.status}.`);
+        setBusy(false);
         return;
       }
 
       const fresh = await fetch("/api/gauntlet");
       const freshBody = await fresh.json().catch(() => ({}));
       setRecord(freshBody.record ?? null);
-      router.refresh();
-    } finally {
+      refreshing.current = true;
+      startTransition(() => router.refresh());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
   }
@@ -150,13 +167,18 @@ export function GauntletBoard({
 
   const controls = (
     <div className="flex flex-wrap gap-2">
-      <Button variant="destructive" size="sm" disabled={busy} onClick={() => run(1)}>
+      <Button
+        variant="destructive"
+        size="sm"
+        disabled={working}
+        onClick={() => run(1)}
+      >
         <Play aria-hidden />
-        {busy ? "Running…" : "Run one attack live"}
+        {working ? "Running…" : "Run one attack live"}
       </Button>
-      <Button variant="outline" size="sm" disabled={busy} onClick={() => run()}>
+      <Button variant="outline" size="sm" disabled={working} onClick={() => run()}>
         <Swords aria-hidden />
-        Run the whole corpus
+        {working ? "Running…" : "Run the whole corpus"}
       </Button>
     </div>
   );
