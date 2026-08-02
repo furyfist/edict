@@ -49,7 +49,8 @@ export function TH({ className, ...props }: React.ComponentProps<"th">) {
     <th
       scope="col"
       className={cn(
-        "text-label text-text-muted h-10 px-3 font-semibold whitespace-nowrap",
+        // `text-label` already carries the 600 weight — headers are labels.
+        "text-label text-text-muted h-10 px-3 whitespace-nowrap",
         className,
       )}
       {...props}
