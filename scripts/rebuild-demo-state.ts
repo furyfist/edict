@@ -4,15 +4,17 @@
  *   npm run demo:rebuild
  *
  * Reseed, one operational tick, the full corpus, the model matrix, a
- * reconciliation, and the
- * signed adversarial record — in that order, because the record cites the
- * completeness proof and a reconciliation run BEFORE the attacks would be
- * anchored to a ledger head the attacks then moved past.
+ * reconciliation, and the signed adversarial record — IN THAT ORDER.
  *
- * Takes 10-20 minutes: it is twelve ticks back to back. Run it overnight, or at
- * minimum an hour before the room. Nothing else may write to the database while
- * it runs — not the test suite, not a second process — or the chain forks. See
- * the chain-break rows in docs/runbook.md.
+ * The order is the whole point. The record cites a completeness proof, and a
+ * reconciliation run before anything that writes to the ledger is anchored to a
+ * head those writes then move past. Reconcile last, after the gauntlet AND the
+ * matrix, or the record correctly refuses to make the strong claim.
+ *
+ * Takes 20-30 minutes: it is twenty-odd ticks back to back. Run it overnight,
+ * or at minimum an hour before the room. Nothing else may write to the database
+ * while it runs — not the test suite, not a second process — or the chain
+ * forks. See the chain-break rows in docs/runbook.md.
  */
 import { db } from "../lib/db/client";
 import { resetDatabase, seedDatabase } from "../lib/db/seed";
