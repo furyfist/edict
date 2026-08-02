@@ -507,6 +507,24 @@ authority held, the guess missed — and is deliberately kept out of the headlin
 number. On the first generated run three of four predictions were wrong, which
 is exactly why that separation exists.
 
+**"Does this depend on which model you use?"**
+The bound does not. The record carries a model matrix — the injection attacks
+run once per available proposer — and it shows the proposers *disagreeing*: the
+deterministic stub takes the $48,000 bait, the live model proposes the real $95
+and ignores it. Different proposals, different outcomes, and in every row the
+same answer in the last column: nothing moved that authority had not granted.
+
+**Do not say "identical outcomes".** It is not true and the table on screen
+would contradict you. The line is:
+
+> *"These proposers do not agree with each other — that is the point. What does
+> not change is the bound. No proposer in this table, including one the attacker
+> owns outright, moved money the policy and the ceiling had not already
+> permitted."*
+
+It is a table, not a beat. Show it if asked; do not build thirty seconds around
+it.
+
 **"How do you know the attacks are reproducible?"**
 The corpus is frozen data, versioned and hashed. Every record cites the corpus
 version *and* its digest, so a record claiming `corpus-1` cannot be matched

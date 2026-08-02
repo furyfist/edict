@@ -77,6 +77,29 @@ the proposer and every token it emits. That is a deliberately harsher threat
 model, and it is the only version of the claim that survives the next model
 release.
 
+**Different proposers do NOT produce identical outcomes, and we do not claim
+they do.** The record carries a model matrix — the injection attacks run once
+per available proposer — and the honest reading of it is:
+
+- the proposals **differ** (the stub takes the $48,000 bait; the live model
+  proposes the real $95 and ignores it)
+- the outcomes therefore **differ** (one escalates at the ceiling, one is an
+  ordinary renewal)
+- **the bound does not differ**: in every row, nothing moved that authority had
+  not granted
+
+The V2 plan asked for "authority outcomes invariant to proposer capability".
+That phrasing is false and this repository's own runbook contains the
+measurement that falsifies it. What is invariant is the *bound*, not the
+behaviour — and that is the stronger claim, because it does not quietly depend
+on every model behaving the same way. It also survives the next model release,
+which "our model is hard to fool" does not.
+
+The matrix only varies the attacks where a proposer has any influence. On the
+proposal gate the attacker replaces the proposer outright, so every variant
+would emit identical output by construction; including those rows would pad the
+table with tautologies.
+
 **It does not prove the corpus is complete.** Sixteen attacks are sixteen
 attacks. There is no claim here that they exhaust the space of attacks, and the
 number is reported as a number rather than as a proof of safety.
