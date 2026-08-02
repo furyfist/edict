@@ -110,6 +110,31 @@ reconciliation attestation that closes that gap, and when the attestation is
 missing, stale, discrepant, or could not read the provider's book, the headline
 refuses the strong wording and names the gap instead. That behaviour is tested.
 
+## Which rails are actually live
+
+**Sandbox.** `sk_test_*` against `sandbox.api.prava.space`. No production access
+has been granted, so **no claim in this demo is backed by real money**, and none
+is made.
+
+What that costs, precisely — and it is less than it sounds:
+
+- The over-cap decline is a **real Visa decline on real card infrastructure**,
+  issued by the sandbox. The ceiling genuinely lives outside this application.
+  What is not real is the money behind it.
+- The passkey ceremony is real when a sandbox key is configured. What it grants
+  is sandbox authority.
+- Everything downstream of execution — the signed chain, the offline verifier,
+  the preview, the gauntlet, the reconciliation mechanism — is unaffected by
+  which rails are live. Those are the contributions, and they are real.
+
+**The application is ready for production and refuses to guess about it.** The
+environment is derived from the credential and the API host rather than declared
+in a flag, because a flag and a credential can disagree and the one that moves
+money is the credential. A live key pointed at the sandbox — or a test key at
+production — is `MISCONFIGURED`: the banner turns red and **the tick refuses to
+run** rather than failing obscurely mid-charge. Say this if asked how the jump
+to production would be handled; it is a better answer than a promise.
+
 ## The second book, stated precisely
 
 This is the newest claim in the system and the easiest one to overstate, so the

@@ -13,7 +13,7 @@ Everything needed to drive the demo, and to recover when something goes wrong.
 | Database reachable | `npm run db:push` |
 | Connection pool | `DATABASE_URL` ends `connection_limit=20`. Worth ~0.2s since the Vendors page reads were grouped; keep it, but it is not load-bearing |
 | Clean state | `npm run seed` |
-| Tests green | `npm run test` — expect 274 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
+| Tests green | `npm run test` — expect 282 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
 | **History replays** | `npm run replay` — expect `IDENTICAL`. If it diverges, the engine no longer reproduces a decision it already made, and beat 1's Q&A answer is gone. **~4s** |
 | **Books balance** | `/authority` → **Reconcile now** → expect **books balance**. If it comes back *cannot be verified*, see the row below. If it comes back *discrepant* before you have attacked anything, **stop and investigate** — that is a real finding |
 | **Gauntlet is pre-run** | `npm run demo:rebuild` — reseed, tick, full corpus, reconcile, sign, in the one order that produces a record able to make the strong claim. **10–20 minutes; run it overnight.** Then `/gauntlet` shows a scoreboard, **attested**, not *never run*. **Nothing else may write to the database while it runs** |
@@ -65,11 +65,12 @@ nothing; one that overruns the number you rehearsed to costs you the room.
 | Receipt export | ~2s | Fine live |
 | Offline verification (8 entries) | **<1s** | Fine live. Local crypto, no round trips |
 | Tamper / restore | ~1s each | Fine live, and repeatable — no reseed needed |
-| Page load — ledger, refusals | ~1.4s | Fine live |
-| Page load — policy | ~2.0s | Fine live. Up from ~1.4s: the page now also reads the activation record |
-| Page load — approvals | ~3.0s | Fine live |
-| Page load — authority | **~1.4s** | Fine live. Down from ~3.9s — its five reads now go out in one wave, and it carries the completeness panel for free |
-| Page load — attack, vendors | ~3.9s | Fine live |
+| Page load — ledger | **~1.7s** | Fine live |
+| Page load — policy | **~2.0s** | Fine live. Carries the activation record |
+| Page load — authority | **~1.5s** | Fine live. Down from ~3.9s — its five reads go out in one wave, and it carries the completeness panel for free |
+| Page load — **gauntlet** | **~1.5s** | Fine live. Reads the record, never runs one |
+| Page load — vendors | **~2.7s** | Fine live |
+| Page load — attack | **~4.2s** | Fine live, but the slowest page. Open it before you need it |
 
 Every page is now comfortably clickable. `/vendors` used to be the exception at
 **~10.2s**; it reads in one grouped wave of seven queries rather than five per
@@ -339,6 +340,74 @@ that reports "balanced" when it has read nothing.
 
 **7. Kill switch.** `/authority`. Type `HALT`. Every mandate pauses, and the
 halted banner appears on every page.
+
+---
+
+## The fallback matrix
+
+**Decide which version of every beat you are giving before you walk in.** Not
+during. The banner at the top of every page tells you which column you are in,
+and it is derived from the credential itself rather than from a flag — see
+`lib/config/rails.ts`.
+
+Four environments. `PRODUCTION` needs a live key **and** the production host;
+mismatch them and the tick refuses to run with `ENVIRONMENT_MISCONFIGURED`
+rather than failing obscurely mid-charge.
+
+| # | Beat | Production | Sandbox (`sk_test_`) | Mock (no key) |
+|---|---|---|---|---|
+| 1 | Policy → preview → confirm | full | full | full |
+| 2 | Overnight ledger | full | full | full |
+| 3 | Walk one decision | full, with a real charge id to cross-check | full, sandbox charge id | full, mock charge id |
+| 4 | Approvals + passkey ceremony | **real ceremony, real ceiling** | real ceremony on sandbox | **no ceremony** — run it as the invariant, see beat 4 |
+| 5 | Gauntlet scoreboard + one live attack | full, bounded budget | full | full |
+| 6 | Over-cap decline | **real Visa decline** | sandbox decline | mock decline, correct shape |
+| 6b | Omission → reconciliation | **blocked** — no charge-history endpoint | **blocked** — same | **full**, and the only place this beat runs |
+| 7 | Export → wifi off → verify | full | full | full |
+| 8 | Kill switch | full, real mandates pause | full | full |
+
+**Two rows need saying out loud.**
+
+*Beat 6b runs on the mock, and only there.* The Prava sandbox exposes no
+charge-history endpoint, so reconciliation correctly reports **cannot be
+verified** rather than inventing an answer
+(`docs/spikes/prava-charge-history.md`). Disclose it; the mechanism is the
+contribution and it is real either way.
+
+*Beat 1 needs a model.* Compilation is the one beat with a hard dependency on
+`OPENAI_API_KEY`. With no model there is no compile — fall back to showing the
+already-activated policy and its attested activation record, which still carries
+the preview hash and still makes the point. Do not pretend a compile happened.
+
+**The one that has no fallback:** `RECEIPT_SIGNING_KEY`. Without it every entry
+reads *unattested*, and beats 3, 5, 6b and 7 all quietly lose their point.
+Check it first, every time.
+
+---
+
+## Beat 8 — the leash held somewhere you do not control
+
+Optional, thirty seconds, and the strongest answer to "what if your whole
+application is compromised?"
+
+Open **Prava's own dashboard**, beside the app. Pause or cancel the mandate
+there — not in our interface. Then run a tick.
+
+> *"I have just revoked this agent's authority from a system I do not control
+> and it does not run on. Watch what our application does about it."*
+
+The next tick refreshes the mandate mirror before adjudicating anything, sees
+the mandate is no longer chargeable, and the engine refuses:
+`MANDATE_INACTIVE`. Nothing was asked of our code — the authority simply stopped
+existing.
+
+> *"Our kill switch is a convenience. That is the real one, and it is held by
+> somebody else."*
+
+**On mock:** there is no dashboard, so this beat becomes the `dead-paused-mandate`
+attack in the gauntlet corpus instead — same defence, same refusal code, shown
+as a row on the scoreboard rather than as a live ceremony. Say which one you are
+giving.
 
 ---
 
