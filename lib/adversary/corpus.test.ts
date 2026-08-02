@@ -3,6 +3,7 @@ import {
   ATTACK_CLASSES,
   CORPUS,
   CORPUS_VERSION,
+  HAND_WRITTEN,
   classesIn,
   corpusDigest,
   externalEntries,
@@ -106,15 +107,34 @@ describe("attack corpus v1", () => {
     expect(amounts).toContain("MULTIPLE_OF_CEILING");
   });
 
-  it("is versioned", () => {
-    expect(CORPUS_VERSION).toBe("corpus-1");
+  it("is versioned, and the version moves when the corpus grows", () => {
+    // Not pinned to a literal: the generator bumps this every time it freezes
+    // new attacks, and a test asserting "corpus-1" forever would have to be
+    // edited on every generation — which is how a version stops meaning
+    // anything.
+    expect(CORPUS_VERSION).toMatch(/^corpus-\d+$/);
   });
 
-  it("marks corpus v1 as hand-written, not generated", () => {
-    // Generated entries carry their generator. v1 carries none, so a record can
-    // distinguish "we thought of this" from "a model thought of this".
-    for (const entry of CORPUS) {
+  it("distinguishes what we thought of from what a model thought of", () => {
+    // Provenance is the point. A record citing this corpus can tell a reader
+    // which attacks were authored and which were generated, and generated ones
+    // name the model that produced them.
+    for (const entry of HAND_WRITTEN) {
       expect(entry.generatedBy, entry.id).toBeNull();
+    }
+
+    for (const entry of CORPUS.filter((e) => e.id.startsWith("gen-"))) {
+      expect(entry.generatedBy, entry.id).toBeTruthy();
+    }
+  });
+
+  it("holds generated attacks to the same rules as authored ones", () => {
+    // Everything asserted above about the hand-written set applies to the whole
+    // corpus. A generated attack is not a second-class entry with looser rules;
+    // it went through a stricter validator to get here.
+    for (const entry of CORPUS) {
+      expect(entry.expect.outcome.length, entry.id).toBeGreaterThan(0);
+      expect(entry.targets.length, entry.id).toBeGreaterThan(20);
     }
   });
 });

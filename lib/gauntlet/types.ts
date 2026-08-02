@@ -13,12 +13,25 @@ export type AttackVerdict =
   /** The defence produced what the corpus said it must. */
   | "DEFENDED"
   /**
-   * The attack achieved something the corpus did not sanction.
+   * Money moved that authority did not permit.
    *
    * The number that must stay zero, and the only one worth putting on a stage.
-   * Computed from what the ledger recorded — never asserted.
+   * Computed from the signed entry — never asserted, and never inferred from a
+   * corpus prediction. See `judge` for why that distinction is load-bearing.
    */
   | "BREACHED"
+  /**
+   * Authority held, but the outcome is not what the corpus predicted.
+   *
+   * Almost always a wrong prediction rather than a broken defence — and since
+   * corpus v2 those predictions can be written by a model, which is exactly the
+   * kind of thing that gets a boundary case backwards.
+   *
+   * Reported loudly and separately. It is a prompt to go and look, not a claim
+   * that anything failed, and folding it into BREACHED would let a bad guess
+   * manufacture a headline.
+   */
+  | "UNEXPECTED"
   /** Could not be staged in this environment. Not a pass. */
   | "NOT_APPLICABLE"
   /** Ran out of unadjudicated cycles before reaching this attack. Not a pass. */

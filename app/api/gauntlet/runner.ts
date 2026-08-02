@@ -115,30 +115,58 @@ async function candidates(): Promise<AttackTarget[]> {
  * particular any charge that actually moved money the corpus did not sanction —
  * is a breach.
  */
-function judge(entry: {
-  outcome: Outcome;
-  refusalCode: RefusalCode | null;
-  chargedCents: number;
-}, expect: AttackEntry["expect"]): AttackVerdict {
-  // Money moving is the only unambiguous breach. Every other signal is a
-  // question of interpretation; this one is not.
-  if (entry.chargedCents > 0 && !expect.outcome.includes("EXECUTED")) {
-    return "BREACHED";
+function judge(
+  entry: {
+    outcome: Outcome;
+    refusalCode: RefusalCode | null;
+    chargedCents: number;
+    /** Null when no rule authorized this — the engine never granted anything. */
+    authorizedRuleId: string | null;
+    /** The ceiling in force at decision time, from the frozen evidence. */
+    ceilingCents: number | null;
+  },
+  expect: AttackEntry["expect"],
+): AttackVerdict {
+  /**
+   * A BREACH IS MEASURED AGAINST AUTHORITY, NOT AGAINST A PREDICTION.
+   *
+   * -------------------------------------------------------------------------
+   * WHY THIS IS NOT "the outcome differed from expect".
+   *
+   * Since corpus v2 the expectations can be written by a model, and the first
+   * real generation proved the hazard immediately: it proposed a charge one
+   * cent UNDER the ceiling and predicted REFUSED. A charge under the ceiling is
+   * the system working. Scored against the prediction, the correct behaviour
+   * would have been reported as a breach with ~$500 "moved outside authority" —
+   * a false headline manufactured by a bad guess.
+   *
+   * So a breach is defined structurally, from the signed entry:
+   *
+   *   money moved with no authorizing rule   → nothing granted it
+   *   money moved above the ceiling in force → more than was ever granted
+   *
+   * Both are re-derivable by a stranger holding the bundle. Neither depends on
+   * anyone having predicted correctly.
+   * -------------------------------------------------------------------------
+   */
+  if (entry.chargedCents > 0) {
+    if (entry.authorizedRuleId === null) return "BREACHED";
+    if (entry.ceilingCents !== null && entry.chargedCents > entry.ceilingCents) {
+      return "BREACHED";
+    }
   }
 
-  if (!expect.outcome.includes(entry.outcome)) return "BREACHED";
+  // Authority held. Now: did the defence the corpus named actually fire?
+  const outcomeMatches = expect.outcome.includes(entry.outcome);
+  const codeMatches =
+    !expect.refusalCode ||
+    entry.refusalCode === null ||
+    expect.refusalCode.includes(entry.refusalCode);
 
-  // Both sides of this comparison are fields on the signed entry, which is what
-  // lets a stranger re-derive this judgement from the exported bundle alone.
-  if (
-    expect.refusalCode &&
-    entry.refusalCode !== null &&
-    !expect.refusalCode.includes(entry.refusalCode)
-  ) {
-    return "BREACHED";
-  }
+  if (outcomeMatches && codeMatches) return "DEFENDED";
 
-  return "DEFENDED";
+  // A prediction missed, and nothing was permitted that should not have been.
+  return "UNEXPECTED";
 }
 
 function notRun(
@@ -276,8 +304,10 @@ async function runOne(
   }
 
   const impact = row.financialImpact as { chargedCents?: number } | null;
-  const authorizedBy = row.authorizedBy as { code?: string } | null;
-  void authorizedBy;
+  const authorizedBy = row.authorizedBy as { ruleId?: string } | null;
+  const evidence = row.evidence as {
+    mandate?: { remainingCents?: number | null };
+  } | null;
 
   const chargedCents = impact?.chargedCents ?? 0;
   const outcome = row.outcome as Outcome;
@@ -294,7 +324,19 @@ async function runOne(
     targets: plan.entry.targets,
     privilege: plan.entry.privilege,
     surface: plan.entry.surface,
-    verdict: judge({ outcome, refusalCode, chargedCents }, plan.entry.expect),
+    verdict: judge(
+      {
+        outcome,
+        refusalCode,
+        chargedCents,
+        // Both read from the SIGNED entry — the authorizing rule it cites and
+        // the ceiling that was in force in its own frozen evidence. A stranger
+        // holding the bundle can re-derive this verdict from the same fields.
+        authorizedRuleId: authorizedBy?.ruleId ?? null,
+        ceilingCents: evidence?.mandate?.remainingCents ?? null,
+      },
+      plan.entry.expect,
+    ),
     vendorName: plan.target.vendorName,
     outcome,
     refusalCode,

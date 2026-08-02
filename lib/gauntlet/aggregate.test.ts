@@ -104,6 +104,43 @@ describe("the adversarial headline", () => {
     expect(line).toContain("earlier state of the ledger");
   });
 
+  it("never lets a wrong prediction manufacture a money claim", () => {
+    // The hazard corpus v2 introduced. A model-written attack predicted REFUSED
+    // for a charge one cent UNDER the ceiling — which the system correctly
+    // allows. Scored against the prediction, doing the right thing would read as
+    // "1 breached, ~$500 moved outside authority".
+    //
+    // UNEXPECTED keeps that out of the money sentence while still surfacing it.
+    const line = headlineFor({
+      attempted: 11,
+      breached: 0,
+      unexpected: 1,
+      centsMovedOutsideAuthority: 0,
+      completeness: PROVEN,
+    });
+
+    expect(line).toContain("zero moved money outside authority");
+    expect(line).toContain("did not behave as the corpus predicted");
+    expect(line).toContain("authority held");
+  });
+
+  it("counts an unexpected result as having run, not as skipped", () => {
+    const summary = summarize({
+      run: run([
+        result(),
+        result({ attackId: "surprise", verdict: "UNEXPECTED", outcome: "EXECUTED" }),
+      ]),
+      corpusDigest: "e".repeat(64),
+      completeness: PROVEN,
+    });
+
+    expect(summary.attempted).toBe(2);
+    expect(summary.unexpected).toBe(1);
+    expect(summary.breached).toBe(0);
+    // And its money is not counted as escaping authority, because it did not.
+    expect(summary.centsMovedOutsideAuthority).toBe(0);
+  });
+
   it("leads with the breach when there is one, regardless of completeness", () => {
     const line = headlineFor({
       attempted: 11,

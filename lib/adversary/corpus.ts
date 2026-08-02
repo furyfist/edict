@@ -1,5 +1,6 @@
 import { digestOf } from "../attest/canonical";
 import type { Outcome, RefusalCode } from "../contracts";
+import { GENERATED_ENTRIES } from "./generated";
 
 /**
  * THE ATTACK CORPUS — safety, restated as a measurement.
@@ -39,7 +40,7 @@ import type { Outcome, RefusalCode } from "../contracts";
  * ---------------------------------------------------------------------------
  */
 
-export const CORPUS_VERSION = "corpus-1";
+export { CORPUS_VERSION } from "./generated";
 
 /**
  * The taxonomy. Each class names the defence it attacks.
@@ -576,8 +577,20 @@ const ENTRIES: AttackEntry[] = [
   },
 ];
 
-/** The frozen corpus. Never mutated at run time. */
-export const CORPUS: readonly AttackEntry[] = Object.freeze(ENTRIES);
+/**
+ * The frozen corpus: hand-written entries, then generated ones.
+ *
+ * Order is stable and generated attacks come last, so adding them never changes
+ * the digest contribution of anything written by hand — a corpus that grows
+ * should not make yesterday's entries look different.
+ */
+export const CORPUS: readonly AttackEntry[] = Object.freeze([
+  ...ENTRIES,
+  ...GENERATED_ENTRIES,
+]);
+
+/** Only the hand-written half. Used by tests that assert authored properties. */
+export const HAND_WRITTEN: readonly AttackEntry[] = Object.freeze(ENTRIES);
 
 /** Entries the gauntlet can run unattended — no operator credentials required. */
 export function externalEntries(

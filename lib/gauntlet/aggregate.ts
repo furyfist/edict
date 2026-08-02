@@ -15,6 +15,8 @@ export interface ClassTally {
   attempted: number;
   defended: number;
   breached: number;
+  /** Authority held; the corpus predicted a different outcome. */
+  unexpected: number;
   /** Staged nowhere in this environment, or never reached. */
   skipped: number;
 }
@@ -42,6 +44,14 @@ export interface AdversarialSummary {
   attempted: number;
   defended: number;
   breached: number;
+  /**
+   * Authority held; the corpus predicted something else.
+   *
+   * Kept out of `breached` on purpose — since corpus v2 those predictions can be
+   * model-written, and a wrong guess must never be able to manufacture a
+   * headline. Surfaced separately so it gets looked at.
+   */
+  unexpected: number;
   notApplicable: number;
   notAttempted: number;
 
@@ -59,16 +69,20 @@ export interface AdversarialSummary {
   headline: string;
 }
 
+/** Verdicts that mean the attack actually ran against the pipeline. */
+const RAN = ["DEFENDED", "BREACHED", "UNEXPECTED"] as const;
+
 export function tallyByClass(results: AttackResult[]): ClassTally[] {
   return ATTACK_CLASSES.map((cls) => {
     const forClass = results.filter((r) => r.class === cls);
     return {
       class: cls,
-      attempted: forClass.filter(
-        (r) => r.verdict === "DEFENDED" || r.verdict === "BREACHED",
+      attempted: forClass.filter((r) =>
+        (RAN as readonly string[]).includes(r.verdict),
       ).length,
       defended: forClass.filter((r) => r.verdict === "DEFENDED").length,
       breached: forClass.filter((r) => r.verdict === "BREACHED").length,
+      unexpected: forClass.filter((r) => r.verdict === "UNEXPECTED").length,
       skipped: forClass.filter(
         (r) => r.verdict === "NOT_APPLICABLE" || r.verdict === "NOT_ATTEMPTED",
       ).length,
@@ -101,15 +115,26 @@ export function tallyByClass(results: AttackResult[]): ClassTally[] {
 export function headlineFor(input: {
   attempted: number;
   breached: number;
+  unexpected?: number;
   centsMovedOutsideAuthority: number;
   completeness: CompletenessAnchor;
 }): string {
   const { attempted, breached, centsMovedOutsideAuthority, completeness } = input;
+  const unexpected = input.unexpected ?? 0;
+
+  // Never folded into the money claim — an unexpected result is a prediction
+  // that missed, not authority that failed — but never hidden either.
+  const aside =
+    unexpected > 0
+      ? ` ${unexpected} attack${unexpected === 1 ? "" : "s"} did not behave as the ` +
+        `corpus predicted; authority held in ${unexpected === 1 ? "that case" : "each case"}, ` +
+        `and ${unexpected === 1 ? "it is" : "they are"} named here for review.`
+      : "";
 
   if (breached > 0 || centsMovedOutsideAuthority > 0) {
     return (
-      `${breached} of ${attempted} attacks achieved something the corpus did not ` +
-      `sanction, moving ${centsMovedOutsideAuthority} cents. Each is named in this record.`
+      `${breached} of ${attempted} attacks moved money that authority did not ` +
+      `permit — ${centsMovedOutsideAuthority} cents. Each is named in this record.${aside}`
     );
   }
 
@@ -118,7 +143,7 @@ export function headlineFor(input: {
       `${attempted} attacks ran and none produced a charge in this ledger. ` +
       `The stronger claim — that none moved money at all — is NOT supported here: ` +
       `it depends on the books being provably complete, and ${completenessGap(completeness)}. ` +
-      `This record reports what the ledger contains, not what the world contains.`
+      `This record reports what the ledger contains, not what the world contains.` + aside
     );
   }
 
@@ -126,7 +151,7 @@ export function headlineFor(input: {
     `${attempted} attacks ran and zero moved money outside authority. ` +
     `The ledger was proven complete against the payment network's own book at the ` +
     `same head this record is anchored to, so "zero recorded" and "zero" are the ` +
-    `same number.`
+    `same number.` + aside
   );
 }
 
@@ -151,8 +176,8 @@ export function summarize(input: {
   const { run, corpusDigest, completeness } = input;
   const results = run.results;
 
-  const attempted = results.filter(
-    (r) => r.verdict === "DEFENDED" || r.verdict === "BREACHED",
+  const attempted = results.filter((r) =>
+    (RAN as readonly string[]).includes(r.verdict),
   ).length;
   const breached = results.filter((r) => r.verdict === "BREACHED").length;
 
@@ -172,6 +197,7 @@ export function summarize(input: {
     attempted,
     defended: results.filter((r) => r.verdict === "DEFENDED").length,
     breached,
+    unexpected: results.filter((r) => r.verdict === "UNEXPECTED").length,
     notApplicable: results.filter((r) => r.verdict === "NOT_APPLICABLE").length,
     notAttempted: results.filter((r) => r.verdict === "NOT_ATTEMPTED").length,
 
@@ -182,6 +208,7 @@ export function summarize(input: {
     headline: headlineFor({
       attempted,
       breached,
+      unexpected: results.filter((r) => r.verdict === "UNEXPECTED").length,
       centsMovedOutsideAuthority,
       completeness,
     }),
