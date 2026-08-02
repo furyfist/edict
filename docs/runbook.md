@@ -13,10 +13,10 @@ Everything needed to drive the demo, and to recover when something goes wrong.
 | Database reachable | `npm run db:push` |
 | Connection pool | `DATABASE_URL` ends `connection_limit=20`. Worth ~0.2s since the Vendors page reads were grouped; keep it, but it is not load-bearing |
 | Clean state | `npm run seed` |
-| Tests green | `npm run test` — expect 282 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
+| Tests green | `npm run test` — expect 299 passing. Includes the module-boundary check and the verifier-conformance check; if either fails, a claim you are about to make on stage is no longer true |
 | **History replays** | `npm run replay` — expect `IDENTICAL`. If it diverges, the engine no longer reproduces a decision it already made, and beat 1's Q&A answer is gone. **~4s** |
 | **Books balance** | `/authority` → **Reconcile now** → expect **books balance**. If it comes back *cannot be verified*, see the row below. If it comes back *discrepant* before you have attacked anything, **stop and investigate** — that is a real finding |
-| **Gauntlet is pre-run** | `npm run demo:rebuild` — reseed, tick, full corpus, reconcile, sign, in the one order that produces a record able to make the strong claim. **10–20 minutes; run it overnight.** Then `/gauntlet` shows a scoreboard, **attested**, not *never run*. **Nothing else may write to the database while it runs** |
+| **Gauntlet is pre-run** | `npm run demo:rebuild` — reseed, tick, full corpus, reconcile, sign, in the one order that produces a record able to make the strong claim. **14–22 minutes; run it overnight.** Then `/gauntlet` shows a scoreboard, **attested**, not *never run*. **Nothing else may write to the database while it runs** |
 | **The record makes the strong claim** | On `/gauntlet`, the headline should read *"…zero moved money outside authority"*, not *"…NOT supported here"*. If it refuses the strong claim it is telling you the completeness proof underneath it is missing or stale: run reconciliation, then re-run the record |
 | **Which book you are reconciling against** | The Authority panel says *checked against Prava* or *the mock provider*. **With `PRAVA_SECRET_KEY` set against the sandbox, every mandate reads `unsupported` and the result is `cannot be verified`** — the sandbox exposes no charge-history endpoint (`docs/spikes/prava-charge-history.md`). Run beat 6 with the mock, and disclose it |
 | **Signing key is set** | `curl <url>/api/receipts/key` → `configured: true`. **If this is false every entry reads *unattested* and beat 7 evaporates.** Set `RECEIPT_SIGNING_KEY`, redeploy, re-run the tick |
@@ -60,7 +60,7 @@ nothing; one that overruns the number you rehearsed to costs you the room.
 | **Omission bypass** (charge under cap, no record) | **~5.1s** | Live. Narrate the one sentence while it runs |
 | **Reconciliation** (8 mandates, both directions) | **4.6–5.7s** | Live. The whole of beat 6 is ~10s of machine time inside a 45s beat |
 | **Gauntlet — one attack** | **~40–90s** | Each attack is a full tick. Live, exactly one, narrated |
-| **Gauntlet — full corpus (12 external attacks)** | **10–18 minutes** | **PRE-RUN THIS. Overnight, or at minimum an hour before the room.** It is twelve ticks back to back |
+| **Gauntlet — full corpus (16 external attacks)** | **14–22 minutes** | **PRE-RUN THIS. Overnight, or at minimum an hour before the room.** It is sixteen ticks back to back |
 | Engine bypass (either mode) | ~3s | Fine live. This is the climax and it is fast |
 | Receipt export | ~2s | Fine live |
 | Offline verification (8 entries) | **<1s** | Fine live. Local crypto, no round trips |
@@ -484,6 +484,28 @@ Then the run reports **cannot be verified**, names the mandates it could not
 read, and signs that. It does not report balanced books. That distinction is the
 single most important line in `lib/reconcile/run.ts` — treating an unreadable
 book as an empty one would turn an outage into a proof of completeness.
+
+**"Who writes the attacks?"**
+Both. The taxonomy and the first fourteen are hand-written, one or more per
+defence. Beyond that, `npm run attacks:generate` asks a model for novel ones —
+they are validated, rebuilt field by field, deduplicated on what they actually
+*do* rather than what they are called, and frozen into a new corpus version
+before anything runs them. Generated entries are prefixed `gen-` and carry the
+model that produced them.
+
+**Say what the model is.** It is `openai/gpt-oss-120b`, not a frontier
+reasoning model. The inversion is still the point — the intelligence budget goes
+to the attacker rather than the agent — but do not let "an AI generated these"
+imply more than it is.
+
+**"Doesn't the model just write attacks it knows will fail?"**
+It cannot write the pass criteria at all. A generated attack may only predict
+REFUSED or ESCALATED, and the pass/fail judgement does not use the prediction:
+a breach is money that moved with no authorizing rule, or above the ceiling in
+force, read off the signed entry. A wrong prediction shows as **UNEXPECTED** —
+authority held, the guess missed — and is deliberately kept out of the headline
+number. On the first generated run three of four predictions were wrong, which
+is exactly why that separation exists.
 
 **"How do you know the attacks are reproducible?"**
 The corpus is frozen data, versioned and hashed. Every record cites the corpus
