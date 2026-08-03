@@ -1,7 +1,6 @@
 import { railsState } from "@/lib/config/rails";
 import { db } from "@/lib/db/client";
 import { ConsoleShell } from "@/app/_components/shell/console-shell";
-import { SandboxBanner } from "@/app/_components/shell/sandbox-banner";
 import { HaltedBanner } from "@/app/_components/shell/halted-banner";
 import { ClockDisplay } from "@/app/_components/shell/clock-display";
 import { railsChip } from "@/app/_components/shell/rails";
@@ -11,8 +10,8 @@ export const dynamic = "force-dynamic";
 /**
  * The console shell — sidebar, top bar, disclosure banners, scrolling main.
  *
- * The banners are rendered here rather than at the root because the marketing
- * entry page is not the product: a rails banner belongs on every surface where
+ * The halted banner is rendered here rather than at the root because the
+ * marketing entry page is not the product: it belongs on every surface where
  * a decision can be taken, and nowhere else.
  *
  * `pendingCount` is UNDEFINED when the database cannot be read, and the badge
@@ -40,12 +39,7 @@ export default async function ConsoleLayout({
       railsTone={chip.tone}
       pendingCount={pendingCount}
       clock={<ClockDisplay />}
-      banners={
-        <>
-          <SandboxBanner />
-          <HaltedBanner />
-        </>
-      }
+      banners={<HaltedBanner />}
     >
       {children}
     </ConsoleShell>
