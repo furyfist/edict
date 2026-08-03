@@ -11,3 +11,5 @@ next-env.d.ts
 prisma/dev.db
 prisma/dev.db-journal
 C:\Users\himan\OneDrive\Desktop\edict\frontend_revamp.md
+.vercel
+.env*
