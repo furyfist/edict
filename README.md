@@ -8,10 +8,7 @@ Companies are starting to hand real spending power to AI agents, and the only th
 
 ## Demo
 
-| | |
-|---|---|
-| **Demo Video** | _[add link]_ |
-| **Live Demo** | _[add link]_ |
+[![Watch the demo](https://img.youtube.com/vi/a7SGo1K1HKQ/maxresdefault.jpg)](https://youtu.be/a7SGo1K1HKQ)
 
 Everything below runs against a payment sandbox. No real money moves.
 
